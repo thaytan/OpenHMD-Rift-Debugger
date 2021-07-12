@@ -1,0 +1,18 @@
+[general]
+
+singleton=false
+load_once=true
+symbol_prefix="godot_"
+reloadable=false
+
+[entry]
+
+X11.64="@TOP_BUILDDIR@/libhmdvis.so"
+Windows.64="@TOP_BUILDDIR@/godot_openhmd.dll"
+OSX="@TOP_BUILDDIR@/libgodot_openhmd.dylib"
+
+[dependencies]
+
+X11.64=[  ]
+Windows=[  ]
+OSX.64=[  ]

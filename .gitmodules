@@ -1,0 +1,7 @@
+[submodule "subprojects/OpenHMD"]
+	path = subprojects/OpenHMD
+	url = https://github.com/thaytan/OpenHMD.git
+	branch = rift-kalman-filter
+[submodule "subprojects/godot_headers"]
+	path = subprojects/godot_headers
+	url = https://github.com/godotengine/godot_headers
