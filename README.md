@@ -37,4 +37,4 @@ godot Main.tscn
 License
 -------
 The source code for the module is released under MIT license (see license file).
-Note that the related products used, hidapi, libusb, openhmd and Godot itself all have their own licenses.
+Note that the related products used, GStreamer, openhmd and Godot itself all have their own licenses.

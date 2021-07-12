@@ -1,3 +1,7 @@
+/*
+ * Copyright 2021 Jan Schmidt <thaytan@noraisin.net>
+ * SPDX-License-Identifier: MIT
+ */
 #ifndef OPENHMD_VISUALISER_H__
 #define OPENHMD_VISUALISER_H__
 

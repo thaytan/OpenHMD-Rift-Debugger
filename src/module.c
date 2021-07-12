@@ -1,3 +1,7 @@
+/*
+ * Copyright 2021 Jan Schmidt <thaytan@noraisin.net>
+ * SPDX-License-Identifier: MIT
+ */
 #include <gdnative_api_struct.gen.h>
 
 #include "module.h"
