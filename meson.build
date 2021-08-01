@@ -14,7 +14,9 @@ c_args = []
 
 hmdvis_sources = [
   'src/module.c',
-  'src/openhmdvisualiser.c'
+  'src/openhmdvisualiser.c',
+  'src/openhmdsensor.c',
+  'src/openhmddevice.c'
 ]
 
 # OpenHMD files needed for simulation
@@ -38,6 +40,12 @@ if not dep_opencv.found()
         dep_opencv = dependency('opencv')
 endif
 deps += dep_opencv
+
+gst_dep = dependency('gstreamer-1.0', fallback : ['gstreamer', 'gst_dep'], required: true)
+gstvideo_dep = dependency('gstreamer-video-1.0', fallback: ['gst-plugins-base', 'video_dep'], required: true)
+gstapp_dep = dependency('gstreamer-app-1.0', fallback: ['gst-plugins-base', 'app_dep'], required: true)
+
+deps += [ gst_dep, gstvideo_dep, gstapp_dep ]
 
 hmdvis_sources += [
     'src/openhmd-compat.c',
@@ -82,3 +90,10 @@ configure_file(input : 'src/hmdvis.gdnlib.in',
 configure_file(input : 'src/OpenHMDVisualiser.gdns.in',
                output : 'OpenHMDVisualiser.gdns',
                configuration: cdata)
+
+dump_recording = executable('dump-recording',
+                      'utils/dump-recording.c',
+                      c_args: c_args,
+                      cpp_args: c_args,
+                      dependencies: deps,
+                      install : false)

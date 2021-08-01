@@ -1,6 +1,12 @@
 /*
  * Copyright 2021 Jan Schmidt <thaytan@noraisin.net>
  * SPDX-License-Identifier: MIT
+ *
+ * The visualiser is the top-level object
+ * published to Godot. It contains functions
+ * to load a recording file, move around in the
+ * timeline, as well as to find out about the
+ * sensors and tracked objects.
  */
 #include <string.h>
 #include <stdio.h>

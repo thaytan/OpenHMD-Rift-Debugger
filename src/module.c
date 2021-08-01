@@ -6,6 +6,8 @@
 
 #include "module.h"
 #include "openhmdvisualiser.h"
+#include "openhmdsensor.h"
+#include "openhmddevice.h"
 
 const godot_gdnative_core_api_struct *api = NULL;
 const godot_gdnative_ext_nativescript_api_struct *nativescript_api = NULL;
@@ -31,5 +33,7 @@ void GDN_EXPORT godot_gdnative_terminate(godot_gdnative_terminate_options *p_opt
 
 void GDN_EXPORT godot_nativescript_init(void *p_handle) {
     openhmd_visualiser_register(p_handle);
+    openhmd_sensor_register(p_handle);
+    openhmd_device_register(p_handle);
 }
 
