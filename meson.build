@@ -93,6 +93,7 @@ configure_file(input : 'src/OpenHMDVisualiser.gdns.in',
 
 dump_recording = executable('dump-recording',
                       'utils/dump-recording.c',
+                      'utils/utils.c',
                       c_args: c_args,
                       cpp_args: c_args,
                       dependencies: deps,
