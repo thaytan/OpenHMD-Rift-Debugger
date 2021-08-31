@@ -45,7 +45,9 @@ gst_dep = dependency('gstreamer-1.0', fallback : ['gstreamer', 'gst_dep'], requi
 gstvideo_dep = dependency('gstreamer-video-1.0', fallback: ['gst-plugins-base', 'video_dep'], required: true)
 gstapp_dep = dependency('gstreamer-app-1.0', fallback: ['gst-plugins-base', 'app_dep'], required: true)
 
-deps += [ gst_dep, gstvideo_dep, gstapp_dep ]
+json_glib_dep = dependency('json-glib-1.0', required : false)
+
+deps += [ gst_dep, gstvideo_dep, gstapp_dep, json_glib_dep ]
 
 hmdvis_sources += [
     'src/openhmd-compat.c',
@@ -93,7 +95,9 @@ configure_file(input : 'src/OpenHMDVisualiser.gdns.in',
 
 dump_recording = executable('dump-recording',
                       'utils/dump-recording.c',
+                      'utils/recording-data.c',
                       'utils/utils.c',
+                      include_directories : inc,
                       c_args: c_args,
                       cpp_args: c_args,
                       dependencies: deps,
