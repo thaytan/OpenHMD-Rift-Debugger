@@ -8,6 +8,8 @@ import json
 
 import math
 
+relative_times = False
+
 def euler_from_quaternion(quat):
     """
     Convert a quaternion into euler angles (roll, pitch, yaw)
@@ -67,6 +69,12 @@ t_priors = list(map(lambda e: e['local-ts'] / 1000000000.0, events_priors))
 t_ignored = list(map(lambda e: e['local-ts'] / 1000000000.0, events_ignored))
 t = list(map(lambda e: e['local-ts'] / 1000000000.0, events))
 
+if relative_times:
+    base_time = min(t_priors[0], t_ignored[0], t[0])
+    t_priors = list(map(lambda t: t - base_time, t_priors))
+    t_ignored = list(map(lambda t: t - base_time, t_ignored))
+    t = list(map(lambda t: t - base_time, t))
+
 fig, axs = plt.subplots(3, 2, sharex=True)
 
 axis_names = ['Roll', 'Pitch', 'Yaw', 'X', 'Y', 'Z']
@@ -82,9 +90,9 @@ for col in range(2):
         obs = list(map(lambda e: e['pos'], events))
 
     for i in range(3):
+        axs[i][col].plot(t, list(map(lambda p: p[i], obs)), '.-r', label='obs')
         axs[i][col].plot(t_priors, list(map(lambda p: p[i], priors)), '.-b', label='prior')
         axs[i][col].plot(t_ignored, list(map(lambda p: p[i], obs_ignored)), '.g', label='ignored')
-        axs[i][col].plot(t, list(map(lambda p: p[i], obs)), '.-r', label='obs')
         axs[i][col].set_xlabel('Time')
         axs[i][col].set_ylabel(axis_names[i + 3*col])
         axs[i][col].grid(True)
