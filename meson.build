@@ -24,6 +24,7 @@ ohmd_src_dir = 'submodules/OpenHMD/src'
 
 inc += include_directories('submodules/OpenHMD/include')
 inc += include_directories('submodules/OpenHMD/src')
+inc += include_directories('submodules/OpenHMD/src/drv_oculus_rift')
 
 c_args += '-DDRIVER_OCULUS_RIFT'
 c_args += '-DHAVE_OPENCV=1'

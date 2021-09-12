@@ -17,7 +17,10 @@ xml_unmarkup *xml_unmarkup_new()
 	g_hash_table_insert (xu->codes, "&gt;", ">");
 	g_hash_table_insert (xu->codes, "&amp;", "&");
 
-	xu->reg = g_regex_new ("&(quot|apos|lt|gt|amp);", 0, 0, NULL);
+  /* Extra hack to fix bad JSON in early recordings */
+	g_hash_table_insert (xu->codes, ", }", " }");
+
+	xu->reg = g_regex_new ("(&(quot|apos|lt|gt|amp);|, })", 0, 0, NULL);
 
 	return xu;
 }

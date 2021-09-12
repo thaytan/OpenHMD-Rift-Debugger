@@ -6,6 +6,7 @@
 #include <gst/app/app.h>
 
 #include "utils.h"
+#include "recording-data.h"
 
 typedef struct gst_reader {
 	GstElement *pipeline;
@@ -13,6 +14,11 @@ typedef struct gst_reader {
 	GstElement *parsebin;
 	GstBus *bus;
 	gint next_stream_id;
+
+	GMutex stream_lock;
+	GList *streams;
+
+	bool finding_stream_ids;
 } gst_reader;
 
 typedef struct gst_reader_ctx {
@@ -23,13 +29,52 @@ typedef struct gst_reader_ctx {
 	guint frames_loaded;
 
 	xml_unmarkup *xu;
+
+	char *stream_title;
 } gst_reader_ctx;
+
+static void
+reader_add_stream(gst_reader *reader, gst_reader_ctx *stream) {
+	g_mutex_lock(&reader->stream_lock);
+	reader->streams = g_list_append(reader->streams, stream);
+	g_mutex_unlock(&reader->stream_lock);
+}
+
+static void
+reader_remove_stream(gst_reader *reader, gst_reader_ctx *stream) {
+	g_mutex_lock(&reader->stream_lock);
+	reader->streams = g_list_remove(reader->streams, stream);
+	g_mutex_unlock(&reader->stream_lock);
+}
+
+static bool
+reader_have_all_ids(gst_reader *reader) {
+	bool have_all = true;
+	GList *cur = NULL;
+
+	g_mutex_lock(&reader->stream_lock);
+	for (cur = reader->streams; cur != NULL; cur = g_list_next(cur)) {
+		gst_reader_ctx *stream = (gst_reader_ctx *)(cur->data);
+		if (stream->stream_title == NULL) {
+			have_all = false;
+			break;
+		}
+	}
+	g_mutex_unlock(&reader->stream_lock);
+
+	return have_all;
+}
 
 static void
 gst_reader_ctx_free (gst_reader_ctx *cb_ctx)
 {
+	if (cb_ctx->reader)
+		reader_remove_stream(cb_ctx->reader, cb_ctx);
+
 	if (cb_ctx->xu)
 		xml_unmarkup_free(cb_ctx->xu);
+
+	g_free (cb_ctx->stream_title);
 	g_free (cb_ctx);
 }
 
@@ -59,11 +104,38 @@ canonicalise_uri (const gchar * in)
 	return gst_filename_to_uri (in, NULL);
 }
 
+static bool
+play_pipeline(struct gst_reader *reader)
+{
+	GstMessage *msg =
+			gst_bus_timed_pop_filtered (reader->bus, GST_CLOCK_TIME_NONE,
+			GST_MESSAGE_ERROR | GST_MESSAGE_EOS | GST_MESSAGE_APPLICATION);
+	bool ret = true;
+
+	if (GST_MESSAGE_TYPE (msg) == GST_MESSAGE_ERROR) {
+		GError *err = NULL;
+		gchar *dbg_info = NULL;
+
+		gst_message_parse_error (msg, &err, &dbg_info);
+		g_printerr ("ERROR from element %s: %s\n",
+				GST_OBJECT_NAME (msg->src), err->message);
+		g_printerr ("Debugging info: %s\n", (dbg_info) ? dbg_info : "none");
+		g_print ("Exiting.\n");
+		g_error_free (err);
+		g_free (dbg_info);
+		ret = false;
+	}
+
+	if (msg != NULL)
+		gst_message_unref (msg);
+
+	return ret;
+}
+
 int
 main (int argc, char *argv[])
 {
 	struct gst_reader reader = { 0, };
-	GstMessage *msg;
 	gchar *uri;
 
 	/* Initialize GStreamer */
@@ -74,13 +146,18 @@ main (int argc, char *argv[])
 		return 1;
 	}
 
+	g_mutex_init(&reader.stream_lock);
+
 	/* Build the pipeline */
 	reader.pipeline = create_element ("pipeline", NULL);
 	reader.urisource = create_element ("urisourcebin", NULL);
 	reader.parsebin = create_element ("parsebin", NULL);
+	reader.finding_stream_ids = true;
 
 	if (reader.pipeline == NULL || reader.urisource == NULL || reader.parsebin == NULL)
 		exit(1);
+
+	reader.bus = gst_element_get_bus (reader.pipeline);
 
 	/* Put all elements in the pipeline and link */
 	gst_bin_add_many (GST_BIN (reader.pipeline), reader.urisource, reader.parsebin, NULL);
@@ -96,29 +173,35 @@ main (int argc, char *argv[])
 	gst_element_set_state (reader.pipeline, GST_STATE_PLAYING);
 	g_print ("Now playing %s\n", argv[1]);
 
-	/* Wait until error or EOS */
-	reader.bus = gst_element_get_bus (reader.pipeline);
-	msg =
-			gst_bus_timed_pop_filtered (reader.bus, GST_CLOCK_TIME_NONE,
-			GST_MESSAGE_ERROR | GST_MESSAGE_EOS);
-	if (GST_MESSAGE_TYPE (msg) == GST_MESSAGE_EOS) {
-		g_print ("Finished playback. Exiting.\n");
-	} else {
-		GError *err = NULL;
-		gchar *dbg_info = NULL;
+	/* Play the pipeline once to discover stream tags */
+	if (!play_pipeline(&reader))
+		goto done;
 
-		gst_message_parse_error (msg, &err, &dbg_info);
-		g_printerr ("ERROR from element %s: %s\n",
-				GST_OBJECT_NAME (msg->src), err->message);
-		g_printerr ("Debugging info: %s\n", (dbg_info) ? dbg_info : "none");
-		g_print ("Exiting.\n");
-		g_error_free (err);
-		g_free (dbg_info);
+	if (reader.finding_stream_ids) {
+		/* FIXME: Check we have all the stream ids */
+		if (!reader_have_all_ids(&reader)) {
+			printf("Failed to find stream IDs for all streams. The recording is damaged");
+			goto done;
+		}
+
+		printf("Collected stream IDs. Starting parsing.\n");
+		reader.finding_stream_ids = false;
+
+		if (!gst_element_seek_simple (GST_ELEMENT(reader.pipeline), GST_FORMAT_TIME, GST_SEEK_FLAG_FLUSH, 0))
+			goto done;
+
+		/* Clear all other pending messages */
+		gst_bus_set_flushing(reader.bus, TRUE);
+		gst_bus_set_flushing(reader.bus, FALSE);
+
+		if (!play_pipeline(&reader))
+			goto done;
 	}
 
+	g_print ("Finished playback. Exiting.\n");
+
+done:
 	/* Free resources */
-	if (msg != NULL)
-		gst_message_unref (msg);
 	gst_object_unref (reader.bus);
 	gst_element_set_state (reader.pipeline, GST_STATE_NULL);
 	gst_object_unref (reader.pipeline);
@@ -145,14 +228,34 @@ handle_stream_tags (GstPad *pad, GstPadProbeInfo *info, gpointer user_data)
 		case GST_EVENT_TAG:
 		{
 			GstTagList *tl;
+			gst_reader *reader = cb_ctx->reader;
 
 			gst_event_parse_tag (event, &tl);
 
 			if (tl && gst_tag_list_get_scope (tl) == GST_TAG_SCOPE_STREAM) {
-				gchar *tag_string = gst_tag_list_to_string (tl);
+				gchar *title_string = NULL;
 
-				printf ("Stream %d got tags %s\n", cb_ctx->stream_id, tag_string);
-				g_free (tag_string);
+				if (gst_tag_list_get_string (tl, GST_TAG_TITLE, &title_string)) {
+					if (g_str_has_prefix(title_string, "global") ||
+							g_str_has_prefix(title_string, "openhmd-rift-sensor") ||
+					    g_str_has_prefix(title_string, "tracked-device")) {
+
+						printf ("Stream %d - found ID %s\n", cb_ctx->stream_id, title_string);
+
+						g_mutex_lock(&cb_ctx->reader->stream_lock);
+						cb_ctx->stream_title = title_string;
+						g_mutex_unlock(&cb_ctx->reader->stream_lock);
+						if (reader_have_all_ids(reader)) {
+							GstMessage *msg;
+							msg = gst_message_new_application(GST_OBJECT(reader->pipeline),
+											gst_structure_new_empty("found-all-streams"));
+							gst_element_post_message(reader->pipeline, msg);
+						}
+					}
+					else {
+						g_free (title_string);
+					}
+				}
 			}
 			break;
 		default:
@@ -167,7 +270,12 @@ static GstPadProbeReturn
 handle_demuxed_video_buffer (GstPad *pad, GstPadProbeInfo *info, gpointer user_data)
 {
 	gst_reader_ctx *cb_ctx = user_data;
+	gst_reader *reader = cb_ctx->reader;
 	GstPadProbeReturn ret = GST_PAD_PROBE_OK;
+
+	if (reader->finding_stream_ids) {
+		return GST_PAD_PROBE_DROP;
+	}
 
 	if (cb_ctx->frames_loaded >= 100)
 		ret = GST_PAD_PROBE_DROP;
@@ -192,6 +300,7 @@ handle_json_buffer(gst_reader *reader, gst_reader_ctx *cb_ctx, GstBuffer *buffer
 {
 	GstMapInfo info = GST_MAP_INFO_INIT;
 	char *json_str;
+	data_point data_point;
 
 	if (!gst_buffer_map (buffer, &info, GST_MAP_READ))
 		return GST_FLOW_ERROR;
@@ -200,11 +309,19 @@ handle_json_buffer(gst_reader *reader, gst_reader_ctx *cb_ctx, GstBuffer *buffer
 	 * JSON strings, so undo that */
 	if (cb_ctx->xu == NULL)
 		cb_ctx->xu = xml_unmarkup_new();
-  json_str = xml_unmarkup_string(cb_ctx->xu, (char *) info.data, info.size);
+	json_str = xml_unmarkup_string(cb_ctx->xu, (char *) info.data, info.size);
 
+	if (!json_parse_data_point_string(json_str, &data_point)) {
+		printf("Failed to parse JSON buffer on Stream %d len %" G_GSIZE_FORMAT " TS %" G_GUINT64_FORMAT ": %s\n",
+		  cb_ctx->stream_id, info.size, GST_BUFFER_PTS(buffer), json_str);
+	}
+
+#if 0
 	printf("Stream %d JSON buffer with len %" G_GSIZE_FORMAT " TS %" G_GUINT64_FORMAT ": %s\n",
 		 cb_ctx->stream_id, info.size, GST_BUFFER_PTS(buffer), json_str);
+#endif
 
+	g_free(json_str);
 	gst_buffer_unmap (buffer, &info);
 	return GST_FLOW_OK;
 }
@@ -213,7 +330,15 @@ static GstFlowReturn on_appsink_sample (GstAppSink *appsink, gpointer user_data)
 {
 	GstSample *sample = gst_app_sink_pull_sample(appsink);
 	gst_reader_ctx *cb_ctx = user_data;
+	gst_reader *reader = cb_ctx->reader;
 	GstFlowReturn ret = GST_FLOW_OK;
+
+	if (reader->finding_stream_ids) {
+		if (sample) {
+			gst_sample_unref (sample);
+		}
+		return GST_FLOW_OK;
+	}
 
 	if (sample) {
 			GstBuffer *buf = gst_sample_get_buffer (sample);
@@ -252,6 +377,8 @@ gen_output (gst_reader *reader, gboolean is_json)
 	cb_ctx->stream_id = reader->next_stream_id++;
 	cb_ctx->is_json = is_json;
 
+	reader_add_stream(cb_ctx->reader, cb_ctx);
+
 	element = gst_bin_new (NULL);
 	if (element == NULL)
 		goto fail;
@@ -263,7 +390,7 @@ gen_output (gst_reader *reader, gboolean is_json)
 	}
 	if (decode == NULL)
 		goto fail;
-	
+
 	if (!is_json) {
 		GstPad *sinkpad;
 
@@ -307,7 +434,7 @@ fail:
 		gst_object_unref (appsink);
 	if (decode)
 		gst_object_unref (decode);
-	g_free (cb_ctx);
+	gst_reader_ctx_free (cb_ctx);
 
 	return NULL;
 }

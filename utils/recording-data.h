@@ -2,15 +2,20 @@
 #include <stdbool.h>
 
 #include "omath.h"
+#include "rift-tracker-common.h"
+#include "rift-sensor-common.h"
+#include "rift-sensor-maths.h"
 
 #ifndef __RECORDING_DATA_H__
 #define __RECORDING_DATA_H__
 
-typedef enum imu_data_point_type imu_data_point_type;
-typedef struct imu_data_point imu_data_point;
+typedef enum data_point_type data_point_type;
+typedef struct data_point data_point;
 
-enum imu_data_point_type {
+enum data_point_type {
     DATA_POINT_DEVICE_ID,
+    DATA_POINT_SENSOR_CONFIG,
+    DATA_POINT_SENSOR_POSE,
     DATA_POINT_IMU,
     DATA_POINT_EXPOSURE,
     DATA_POINT_POSE,
@@ -19,12 +24,34 @@ enum imu_data_point_type {
     DATA_POINT_FRAME_RELEASE
 };
 
-struct imu_data_point {
-    imu_data_point_type data_type;
+struct data_point {
+    data_point_type data_type;
+    uint64_t ts;
+
     union {
       struct {
         int device_id;
-      } id;
+
+        rift_tracked_device_imu_calibration imu_calibration;
+
+        posef imu_pose;
+
+        int num_leds;
+        rift_led leds[45];
+      } device_id;
+
+      struct {
+        char serial_no[RIFT_SENSOR_SERIAL_LEN+1];
+        char stream_id[64];
+        bool is_cv1;
+        dmat3 camera_matrix;
+        double dist_coeffs[5];
+      } sensor_config;
+
+      struct {
+        char serial_no[RIFT_SENSOR_SERIAL_LEN+1];
+        posef pose;
+      } sensor_pose;
 
       struct {
         uint64_t local_ts;
@@ -47,17 +74,20 @@ struct imu_data_point {
 
       struct {
         uint64_t local_ts;
+        char serial_no[RIFT_SENSOR_SERIAL_LEN+1];
       } frame_start;
 
       struct {
         uint64_t local_ts;
         uint64_t frame_local_ts;
+        char serial_no[RIFT_SENSOR_SERIAL_LEN+1];
         int delay_slot;
       } frame_captured;
 
       struct {
         uint64_t local_ts;
         uint64_t frame_local_ts;
+        char serial_no[RIFT_SENSOR_SERIAL_LEN+1];
         int delay_slot;
       } frame_release;
 
@@ -70,11 +100,20 @@ struct imu_data_point {
         uint32_t exposure_hmd_ts;
         uint32_t exposure_count;
         int delay_slot;
+        char serial_no[RIFT_SENSOR_SERIAL_LEN+1];
+        uint32_t score_flags;
+        bool update_position;
+        bool update_orientation;
+
         posef pose;
+        posef capture_pose;
+
+        vec3f capture_rot_error;
+        vec3f capture_pos_error;
       } pose;
     };
 };
 
-bool imu_read_data_file(const char *fname, imu_data_point **points, uint32_t *num_points);
+bool json_parse_data_point_string(const char *json_data, data_point *point);
 
 #endif
