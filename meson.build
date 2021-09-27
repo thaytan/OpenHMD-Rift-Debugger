@@ -5,11 +5,12 @@ project('Godot OpenHMD visualisation plugin',
   license : 'MIT')
 
 dep_libm = meson.get_compiler('c').find_library('m', required: false)
-deps = [
+ext_deps = [
     dep_libm
 ]
 
 inc = [ include_directories('submodules/godot_headers') ]
+inc += include_directories('src/lib')
 c_args = []
 
 hmdvis_sources = [
@@ -30,7 +31,7 @@ c_args += '-DDRIVER_OCULUS_RIFT'
 c_args += '-DHAVE_OPENCV=1'
 
 dep_threads = dependency('threads')
-deps += dep_threads
+ext_deps += dep_threads
 
 dep_opencv = dependency('opencv4', required: false)
 if not dep_opencv.found()
@@ -40,7 +41,7 @@ endif
 if not dep_opencv.found()
         dep_opencv = dependency('opencv')
 endif
-deps += dep_opencv
+ext_deps += dep_opencv
 
 gst_dep = dependency('gstreamer-1.0', fallback : ['gstreamer', 'gst_dep'], required: true)
 gstvideo_dep = dependency('gstreamer-video-1.0', fallback: ['gst-plugins-base', 'video_dep'], required: true)
@@ -48,7 +49,7 @@ gstapp_dep = dependency('gstreamer-app-1.0', fallback: ['gst-plugins-base', 'app
 
 json_glib_dep = dependency('json-glib-1.0', required : false)
 
-deps += [ gst_dep, gstvideo_dep, gstapp_dep, json_glib_dep ]
+ext_deps += [ gst_dep, gstvideo_dep, gstapp_dep, json_glib_dep ]
 
 hmdvis_sources += [
     'src/openhmd-compat.c',
@@ -74,13 +75,27 @@ else
     hmdvis_sources += ohmd_src_dir / 'platform-posix.c'
 endif
 
+trackersimlib_sources = [
+  'src/lib/recording-loader.c',
+  'src/lib/recording-data.c',
+  'src/lib/utils.c'
+]
+
+trackersim_lib = library('trackersimlib',
+                        trackersimlib_sources,
+                        include_directories : inc,
+                        c_args: c_args,
+                        cpp_args: c_args,
+                        dependencies: ext_deps,
+                        install : false)
 
 hmdvis_lib = shared_library('hmdvis',
                         hmdvis_sources,
                         include_directories : inc,
                         c_args: c_args,
                         cpp_args: c_args,
-                        dependencies: deps,
+                        dependencies: ext_deps,
+                        link_with: trackersim_lib ,
                         install : false)
 
 cdata = configuration_data()
@@ -96,10 +111,9 @@ configure_file(input : 'src/OpenHMDVisualiser.gdns.in',
 
 dump_recording = executable('dump-recording',
                       'utils/dump-recording.c',
-                      'utils/recording-data.c',
-                      'utils/utils.c',
                       include_directories : inc,
                       c_args: c_args,
                       cpp_args: c_args,
-                      dependencies: deps,
+                      dependencies: ext_deps,
+                      link_with: trackersim_lib,
                       install : false)
