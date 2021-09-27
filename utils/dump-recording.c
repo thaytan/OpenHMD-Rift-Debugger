@@ -5,14 +5,34 @@
 
 #include "recording-loader.h"
 
+static void handle_new_stream(void *cb_data, int stream_id, recording_stream_type type,
+		const char *stream_name)
+{
+}
+
+static void handle_on_event(void *cb_data, int stream_id, uint64_t pts, struct data_point *data)
+{
+}
+
+static bool handle_on_encoded_frame(void *cb_data, int stream_id, uint64_t pts, unsigned char *data, size_t len)
+{
+	/* Don't decode */
+	return false;
+}
+
 int
 main (int argc, char *argv[])
 {
-	gst_reader *reader = NULL;
-	bool ret;
+	recording_loader *reader = NULL;
+	recording_loader_callbacks callbacks = {
+		.new_stream = handle_new_stream,
+		.on_event = handle_on_event,
+		.on_encoded_frame = handle_on_encoded_frame,
+		.on_video_frame = NULL
+	};
 
 	/* Initialize GStreamer */
-	if (!recording_loader_init()) {
+	if (!recording_loader_init(NULL, NULL)) {
 		printf ("Initialisation failed\n");
 		return 1;
 	}
@@ -22,7 +42,7 @@ main (int argc, char *argv[])
 		return 1;
 	}
 
-	reader = recording_loader_new();
+	reader = recording_loader_new(&callbacks, NULL);
 	if (reader == NULL) {
 		printf("Could not start file reader\n");
 		return 2;
