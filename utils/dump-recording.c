@@ -1,3 +1,4 @@
+#include <inttypes.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -5,16 +6,20 @@
 
 #include "recording-loader.h"
 
-static void handle_new_stream(void *cb_data, int stream_id, recording_stream_type type,
-		const char *stream_name)
+static void handle_new_stream(void *cb_data, recording_loader_stream *stream,
+		recording_stream_type type, const char *stream_name)
 {
 }
 
-static void handle_on_event(void *cb_data, int stream_id, uint64_t pts, struct data_point *data)
+static void handle_json_data(void *cb_data, recording_loader_stream *stream, uint64_t pts,
+		const char *json_data)
 {
+	int stream_id = recording_loader_stream_id(stream);
+	printf("PTS %" PRIu64 " Stream %d %s\n", pts, stream_id, json_data);
 }
 
-static bool handle_on_encoded_frame(void *cb_data, int stream_id, uint64_t pts, unsigned char *data, size_t len)
+static bool handle_on_encoded_frame(void *cb_data, recording_loader_stream *stream,
+		uint64_t pts, unsigned char *data, size_t len)
 {
 	/* Don't decode */
 	return false;
@@ -26,7 +31,8 @@ main (int argc, char *argv[])
 	recording_loader *reader = NULL;
 	recording_loader_callbacks callbacks = {
 		.new_stream = handle_new_stream,
-		.on_event = handle_on_event,
+		.on_json_data = handle_json_data,
+		.on_event = NULL,
 		.on_encoded_frame = handle_on_encoded_frame,
 		.on_video_frame = NULL
 	};

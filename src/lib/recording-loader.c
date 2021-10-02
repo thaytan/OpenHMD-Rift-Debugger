@@ -21,7 +21,7 @@ struct recording_loader {
 	void *callback_data;
 };
 
-typedef struct recording_loader_stream_ctx {
+struct recording_loader_stream {
 	recording_loader *reader;
 	gint stream_id;
 	recording_stream_type stream_type;
@@ -33,10 +33,12 @@ typedef struct recording_loader_stream_ctx {
 	xml_unmarkup *xu;
 
 	char *stream_title;
-} recording_loader_stream_ctx;
+
+	void *callback_data;
+};
 
 static void
-reader_add_stream(recording_loader *reader, recording_loader_stream_ctx *stream) {
+reader_add_stream(recording_loader *reader, recording_loader_stream *stream) {
 	g_mutex_lock(&reader->stream_lock);
 	reader->streams = g_list_append(reader->streams, stream);
 	g_print("New %s stream %d\n", stream->is_json ? "JSON" : "Video", stream->stream_id);
@@ -44,7 +46,7 @@ reader_add_stream(recording_loader *reader, recording_loader_stream_ctx *stream)
 }
 
 static void
-reader_remove_stream(recording_loader *reader, recording_loader_stream_ctx *stream) {
+reader_remove_stream(recording_loader *reader, recording_loader_stream *stream) {
 	g_mutex_lock(&reader->stream_lock);
 	reader->streams = g_list_remove(reader->streams, stream);
 	g_mutex_unlock(&reader->stream_lock);
@@ -57,7 +59,7 @@ reader_have_all_ids(recording_loader *reader) {
 
 	g_mutex_lock(&reader->stream_lock);
 	for (cur = reader->streams; cur != NULL; cur = g_list_next(cur)) {
-		recording_loader_stream_ctx *stream = (recording_loader_stream_ctx *)(cur->data);
+		recording_loader_stream *stream = (recording_loader_stream *)(cur->data);
 		if (stream->stream_title == NULL) {
 			have_all = false;
 			break;
@@ -78,15 +80,15 @@ reader_announce_streams(recording_loader *reader)
 
 	g_mutex_lock(&reader->stream_lock);
 	for (cur = reader->streams; cur != NULL; cur = g_list_next(cur)) {
-		recording_loader_stream_ctx *stream = (recording_loader_stream_ctx *)(cur->data);
+		recording_loader_stream *stream = (recording_loader_stream *)(cur->data);
 		reader->callbacks.new_stream(reader->callback_data,
-				stream->stream_id, stream->stream_type, stream->stream_title);
+				stream, stream->stream_type, stream->stream_title);
 	}
 	g_mutex_unlock(&reader->stream_lock);
 }
 
 static void
-recording_loader_stream_ctx_free (recording_loader_stream_ctx *stream)
+recording_loader_stream_free (recording_loader_stream *stream)
 {
 	if (stream->reader)
 		reader_remove_stream(stream->reader, stream);
@@ -146,14 +148,14 @@ play_pipeline(struct recording_loader *reader)
 static void
 on_appsink_eos (GstAppSink *appsink, gpointer user_data)
 {
-	recording_loader_stream_ctx *stream = user_data;
+	recording_loader_stream *stream = user_data;
 	stream->at_eos = TRUE;
 }
 
 static GstPadProbeReturn
 handle_stream_tags (GstPad *pad, GstPadProbeInfo *info, gpointer user_data)
 {
-	recording_loader_stream_ctx *stream = user_data;
+	recording_loader_stream *stream = user_data;
 	GstPadProbeReturn ret = GST_PAD_PROBE_OK;
 	GstEvent *event;
 
@@ -212,7 +214,7 @@ handle_stream_tags (GstPad *pad, GstPadProbeInfo *info, gpointer user_data)
 static GstPadProbeReturn
 handle_demuxed_video_buffer (GstPad *pad, GstPadProbeInfo *info, gpointer user_data)
 {
-	recording_loader_stream_ctx *stream = user_data;
+	recording_loader_stream *stream = user_data;
 	recording_loader *reader = stream->reader;
 
 	/* Don't do anything during initial stream ID pass */
@@ -231,7 +233,7 @@ handle_demuxed_video_buffer (GstPad *pad, GstPadProbeInfo *info, gpointer user_d
 			return GST_PAD_PROBE_OK;
 		}
 		ret = reader->callbacks.on_encoded_frame(reader->callback_data,
-						stream->stream_id, (uint64_t) pts, map.data, map.size);
+						stream, (uint64_t) pts, map.data, map.size);
 		gst_buffer_unmap (buffer, &map);
 
 		if (!ret)
@@ -242,7 +244,7 @@ handle_demuxed_video_buffer (GstPad *pad, GstPadProbeInfo *info, gpointer user_d
 }
 
 static GstFlowReturn
-handle_decoded_video_buffer(recording_loader *reader, recording_loader_stream_ctx *stream, GstBuffer *buffer)
+handle_decoded_video_buffer(recording_loader *reader, recording_loader_stream *stream, GstBuffer *buffer)
 {
 	GstMapInfo map = GST_MAP_INFO_INIT;
 	GstClockTime pts;
@@ -264,7 +266,7 @@ handle_decoded_video_buffer(recording_loader *reader, recording_loader_stream_ct
 
 	if (reader->callbacks.on_video_frame) {
 		reader->callbacks.on_video_frame(reader->callback_data,
-					stream->stream_id, pts, map.data, map.size);
+					stream, pts, map.data, map.size);
 	}
 	g_mutex_unlock(&reader->stream_lock);
 
@@ -274,12 +276,12 @@ handle_decoded_video_buffer(recording_loader *reader, recording_loader_stream_ct
 }
 
 static GstFlowReturn
-handle_json_buffer(recording_loader *reader, recording_loader_stream_ctx *stream, GstBuffer *buffer)
+handle_json_buffer(recording_loader *reader, recording_loader_stream *stream, GstBuffer *buffer)
 {
 	GstMapInfo info = GST_MAP_INFO_INIT;
 	char *json_str;
 	data_point data_point;
-	GstClockTime pts;
+	GstClockTime pts = GST_BUFFER_PTS(buffer);
 
 	if (!gst_buffer_map (buffer, &info, GST_MAP_READ))
 		return GST_FLOW_ERROR;
@@ -290,13 +292,16 @@ handle_json_buffer(recording_loader *reader, recording_loader_stream_ctx *stream
 		stream->xu = xml_unmarkup_new();
 	json_str = xml_unmarkup_string(stream->xu, (char *) info.data, info.size);
 
+	if (reader->callbacks.on_json_data) {
+		reader->callbacks.on_json_data(reader->callback_data, stream, pts, json_str);
+	}
+
 	if (!json_parse_data_point_string(json_str, &data_point)) {
 		g_print("Failed to parse JSON buffer on Stream %d len %" G_GSIZE_FORMAT
 		    " TS %" G_GUINT64_FORMAT ": %s\n",
 		    stream->stream_id, info.size, GST_BUFFER_PTS(buffer), json_str);
 	}
 	else {
-		pts = GST_BUFFER_PTS(buffer);
 
 		g_mutex_lock(&reader->stream_lock);
 		GST_DEBUG("stream %d metadata point PTS %" GST_TIME_FORMAT, stream->stream_id, GST_TIME_ARGS(pts));
@@ -310,7 +315,7 @@ handle_json_buffer(recording_loader *reader, recording_loader_stream_ctx *stream
 		reader->last_pts = pts;
 
 		if (reader->callbacks.on_event) {
-			reader->callbacks.on_event(reader->callback_data, stream->stream_id, pts, &data_point);
+			reader->callbacks.on_event(reader->callback_data, stream, pts, &data_point);
 		}
 		g_mutex_unlock(&reader->stream_lock);
 	}
@@ -323,7 +328,7 @@ handle_json_buffer(recording_loader *reader, recording_loader_stream_ctx *stream
 static GstFlowReturn on_appsink_sample (GstAppSink *appsink, gpointer user_data)
 {
 	GstSample *sample = gst_app_sink_pull_sample(appsink);
-	recording_loader_stream_ctx *stream = user_data;
+	recording_loader_stream *stream = user_data;
 	recording_loader *reader = stream->reader;
 	GstFlowReturn ret = GST_FLOW_OK;
 
@@ -356,7 +361,7 @@ static GstElement *
 gen_output (recording_loader *reader, gboolean is_json)
 {
 	GstAppSinkCallbacks cb = { 0, };
-	recording_loader_stream_ctx *stream = NULL;
+	recording_loader_stream *stream = NULL;
 	GstElement *element = NULL;
 	GstElement *decode = NULL;
 	GstAppSink *appsink = NULL;
@@ -365,7 +370,7 @@ gen_output (recording_loader *reader, gboolean is_json)
 	cb.eos = on_appsink_eos;
 	cb.new_sample = on_appsink_sample;
 
-	stream = g_new0 (recording_loader_stream_ctx, 1);
+	stream = g_new0 (recording_loader_stream, 1);
 
 	stream->reader = reader;
 	stream->stream_id = reader->next_stream_id++;
@@ -403,7 +408,7 @@ gen_output (recording_loader *reader, gboolean is_json)
 	if (appsink == NULL)
 		goto fail;
 
-	gst_app_sink_set_callbacks (appsink, &cb, stream, (GDestroyNotify) recording_loader_stream_ctx_free);
+	gst_app_sink_set_callbacks (appsink, &cb, stream, (GDestroyNotify) recording_loader_stream_free);
 	g_object_set (G_OBJECT(appsink), "async", FALSE, "max-buffers", 1, "sync", FALSE, NULL);
 
 	/* Catch TAG events. We could get these off the bus, but this way works too
@@ -428,7 +433,7 @@ fail:
 		gst_object_unref (appsink);
 	if (decode)
 		gst_object_unref (decode);
-	recording_loader_stream_ctx_free (stream);
+	recording_loader_stream_free (stream);
 
 	return NULL;
 }
@@ -658,10 +663,25 @@ recording_loader_free(recording_loader *reader)
 	}
 }
 
-bool recording_loader_init(recording_loader_callbacks *cb, void *cb_data)
+bool recording_loader_init()
 {
 	/* Initialize GStreamer */
 	gst_init (NULL, NULL);
 
 	return true;
+}
+
+int recording_loader_stream_id(recording_loader_stream *stream)
+{
+	return stream->stream_id;
+}
+
+void recording_loader_stream_set_cbdata(recording_loader_stream *stream, void *cb_data)
+{
+	stream->callback_data = cb_data;
+}
+
+void *recording_loader_stream_get_cbdata(recording_loader_stream *stream)
+{
+	return stream->callback_data;
 }
