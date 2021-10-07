@@ -1,18 +1,25 @@
+#include <assert.h>
+
 #include <gst/gst.h>
 #include <gst/app/app.h>
 
 #include "utils.h"
 #include "recording-loader.h"
 
+#define MAX_STREAMS 16
+
+#define USE_URISOURCEBIN 0
+
 struct recording_loader {
 	GstElement *pipeline;
-	GstElement *urisource;
+	GstElement *source;
 	GstElement *parsebin;
 	GstBus *bus;
 	gint next_stream_id;
 
 	GMutex stream_lock;
-	GList *streams;
+	gint n_streams;
+	recording_loader_stream *streams[MAX_STREAMS];
 
 	bool finding_stream_ids;
 	GstClockTime last_pts;
@@ -35,31 +42,40 @@ struct recording_loader_stream {
 	char *stream_title;
 
 	void *callback_data;
+
+	/* Element that handles this stream */
+	GstElement *target;
 };
 
 static void
 reader_add_stream(recording_loader *reader, recording_loader_stream *stream) {
 	g_mutex_lock(&reader->stream_lock);
-	reader->streams = g_list_append(reader->streams, stream);
-	g_print("New %s stream %d\n", stream->is_json ? "JSON" : "Video", stream->stream_id);
+	assert (reader->n_streams < MAX_STREAMS);
+	reader->streams[reader->n_streams++] = stream;
+	GST_INFO("New %s stream %d\n", stream->is_json ? "JSON" : "Video", stream->stream_id);
 	g_mutex_unlock(&reader->stream_lock);
 }
 
 static void
 reader_remove_stream(recording_loader *reader, recording_loader_stream *stream) {
+	int i;
+
 	g_mutex_lock(&reader->stream_lock);
-	reader->streams = g_list_remove(reader->streams, stream);
+	for (i = 0; i < reader->n_streams; i++) {
+		if (reader->streams[i] == stream)
+			reader->streams[i] = NULL;
+	}
 	g_mutex_unlock(&reader->stream_lock);
 }
 
 static bool
 reader_have_all_ids(recording_loader *reader) {
 	bool have_all = true;
-	GList *cur = NULL;
+	int i;
 
 	g_mutex_lock(&reader->stream_lock);
-	for (cur = reader->streams; cur != NULL; cur = g_list_next(cur)) {
-		recording_loader_stream *stream = (recording_loader_stream *)(cur->data);
+	for (i = 0; i < reader->n_streams; i++) {
+		recording_loader_stream *stream = reader->streams[i];
 		if (stream->stream_title == NULL) {
 			have_all = false;
 			break;
@@ -73,14 +89,14 @@ reader_have_all_ids(recording_loader *reader) {
 static void
 reader_announce_streams(recording_loader *reader)
 {
-	GList *cur = NULL;
+	int i;
 
 	if (reader->callbacks.new_stream == NULL)
 		return;
 
 	g_mutex_lock(&reader->stream_lock);
-	for (cur = reader->streams; cur != NULL; cur = g_list_next(cur)) {
-		recording_loader_stream *stream = (recording_loader_stream *)(cur->data);
+	for (i = 0; i < reader->n_streams; i++) {
+		recording_loader_stream *stream = reader->streams[i];
 		reader->callbacks.new_stream(reader->callback_data,
 				stream, stream->stream_type, stream->stream_title);
 	}
@@ -96,6 +112,9 @@ recording_loader_stream_free (recording_loader_stream *stream)
 	if (stream->xu)
 		xml_unmarkup_free(stream->xu);
 
+	if (stream->target)
+		gst_object_unref (stream->target);
+
 	g_free (stream->stream_title);
 	g_free (stream);
 }
@@ -107,7 +126,7 @@ create_element (const gchar * type, const gchar * name)
 
 	e = gst_element_factory_make (type, name);
 	if (!e) {
-		g_print ("Failed to create element %s\n", type);
+		g_printerr("Failed to create element %s\n", type);
 		return NULL;
 	}
 
@@ -115,7 +134,9 @@ create_element (const gchar * type, const gchar * name)
 }
 
 static void handle_new_output_pad (GstElement * decodebin, GstPad * pad, recording_loader *reader);
+#if USE_URISOURCEBIN
 static void handle_new_urisource_pad (GstElement *sourcebin, GstPad * pad, recording_loader *reader);
+#endif
 
 static bool
 play_pipeline(struct recording_loader *reader)
@@ -133,7 +154,6 @@ play_pipeline(struct recording_loader *reader)
 		g_printerr ("ERROR from element %s: %s\n",
 				GST_OBJECT_NAME (msg->src), err->message);
 		g_printerr ("Debugging info: %s\n", (dbg_info) ? dbg_info : "none");
-		g_print ("Exiting.\n");
 		g_error_free (err);
 		g_free (dbg_info);
 		ret = false;
@@ -189,12 +209,20 @@ handle_stream_tags (GstPad *pad, GstPadProbeInfo *info, gpointer user_data)
 					break;
 				}
 
-				g_print ("Stream %d - found ID %s\n", stream->stream_id, title_string);
-
 				g_mutex_lock(&stream->reader->stream_lock);
 				stream->stream_type = stream_type;
-				stream->stream_title = title_string;
-				g_mutex_unlock(&stream->reader->stream_lock);
+				if (stream->stream_title == NULL) {
+					stream->stream_title = title_string;
+					GST_INFO("Stream %d - found ID %s\n", stream->stream_id, title_string);
+					g_mutex_unlock(&stream->reader->stream_lock);
+				}
+				else {
+					assert(g_str_equal (title_string, stream->stream_title));
+					g_free(title_string);
+					g_mutex_unlock(&stream->reader->stream_lock);
+					break;
+				}
+
 				if (reader_have_all_ids(reader)) {
 					GstMessage *msg;
 					msg = gst_message_new_application(GST_OBJECT(reader->pipeline),
@@ -297,7 +325,7 @@ handle_json_buffer(recording_loader *reader, recording_loader_stream *stream, Gs
 	}
 
 	if (!json_parse_data_point_string(json_str, &data_point)) {
-		g_print("Failed to parse JSON buffer on Stream %d len %" G_GSIZE_FORMAT
+		g_printerr("Failed to parse JSON buffer on Stream %d len %" G_GSIZE_FORMAT
 		    " TS %" G_GUINT64_FORMAT ": %s\n",
 		    stream->stream_id, info.size, GST_BUFFER_PTS(buffer), json_str);
 	}
@@ -331,6 +359,13 @@ static GstFlowReturn on_appsink_sample (GstAppSink *appsink, gpointer user_data)
 	recording_loader_stream *stream = user_data;
 	recording_loader *reader = stream->reader;
 	GstFlowReturn ret = GST_FLOW_OK;
+
+	if (sample) {
+		GstBuffer *buf = gst_sample_get_buffer (sample);
+		if (buf) {
+	    GST_LOG("Sample on stream %d PTS %" G_GUINT64_FORMAT, stream->stream_id, GST_BUFFER_PTS(buf));
+		}
+	}
 
 	if (reader->finding_stream_ids) {
 		if (sample) {
@@ -424,6 +459,8 @@ gen_output (recording_loader *reader, gboolean is_json)
 	gst_element_add_pad (element, gst_ghost_pad_new ("sink", pad));
 	gst_object_unref (pad);
 
+	stream->target = gst_object_ref(element);
+
 	return element;
 
 fail:
@@ -443,13 +480,36 @@ handle_new_output_pad (GstElement * decodebin, GstPad * pad, recording_loader *r
 {
 	GstCaps *caps;
 	GstStructure *str;
-	GstElement *target;
 	const gchar *name;
 	GstStateChangeReturn ret;
 	GstPad *sink;
 	gchar *capsstr;
 	gchar *pad_name;
 	gboolean is_json;
+
+	/* On the 2nd pass, our stream should already exist - just relink it */
+	if (reader->finding_stream_ids == FALSE) {
+		assert (reader->next_stream_id < MAX_STREAMS);
+		assert (reader->streams[reader->next_stream_id] != NULL);
+
+		recording_loader_stream *stream = reader->streams[reader->next_stream_id];
+		assert (stream->target != NULL);
+
+		sink = gst_element_get_static_pad (GST_ELEMENT_CAST (stream->target), "sink");
+
+		GST_INFO ("Reconnecting pad %" GST_PTR_FORMAT " to target %" GST_PTR_FORMAT,
+				pad, sink);
+
+		if (gst_pad_link (pad, sink) != GST_PAD_LINK_OK) {
+			gst_object_unref (sink);
+			g_printerr ("Failed to re-link pad for stream %d on 2nd pass\n",
+				reader->next_stream_id);
+			return;
+		}
+		gst_object_unref (sink);
+		reader->next_stream_id++;
+		return;
+	}
 
 	/* Extract the caps from the pad to see if it is audio or video */
 	caps = gst_pad_get_current_caps (pad);
@@ -466,14 +526,14 @@ handle_new_output_pad (GstElement * decodebin, GstPad * pad, recording_loader *r
 	/* Finished with the caps, unref them so they don't leak. */
 	gst_caps_unref (caps);
 
-	target = gen_output (reader, is_json);
+	GstElement *target = gen_output (reader, is_json);
 	if (target == NULL)
 		return;
 
 	caps = gst_pad_get_current_caps (pad);
 	capsstr = gst_caps_to_string (caps);
 	pad_name = gst_pad_get_name (pad);
-	g_print ("Adding %s output for pad %s with caps %s\n",
+	GST_INFO("Adding %s output for pad %s with caps %s\n",
 			is_json ? "JSON" : "JPEG", pad_name, capsstr);
 	gst_caps_unref (caps);
 	g_free (capsstr);
@@ -502,7 +562,7 @@ link_error:{
 		capsstr = gst_caps_to_string (caps);
 		pad_name = gst_pad_get_name (pad);
 
-		g_print ("Failed to link parsebin pad %s with caps %s to output chain\n",
+		g_printerr("Failed to link parsebin pad %s with caps %s to output chain\n",
 				pad_name, capsstr);
 
 		gst_caps_unref (caps);
@@ -516,12 +576,13 @@ link_error:{
 	}
 
 state_change_error:
-	g_print ("Failed to set the state of output chain\n");
+	g_printerr("Failed to set the state of output chain\n");
 	gst_bin_remove (GST_BIN_CAST (reader->pipeline), target);
 
 	return;
 }
 
+#if USE_URISOURCEBIN
 static void
 handle_new_urisource_pad (GstElement *sourcebin, GstPad * pad, recording_loader *reader)
 {
@@ -557,6 +618,7 @@ link_error:
 		return;
 	}
 }
+#endif
 
 recording_loader *recording_loader_new(recording_loader_callbacks *cb, void *cb_data)
 {
@@ -571,18 +633,28 @@ recording_loader *recording_loader_new(recording_loader_callbacks *cb, void *cb_
 
 	/* Build the pipeline */
 	reader->pipeline = create_element ("pipeline", NULL);
-	reader->urisource = create_element ("urisourcebin", NULL);
+
+#if USE_URISOURCEBIN
+	reader->source = create_element ("urisourcebin", NULL);
+#else
+	reader->source = create_element ("filesrc", NULL);
+#endif
 	reader->parsebin = create_element ("parsebin", NULL);
 
-	if (reader->pipeline == NULL || reader->urisource == NULL || reader->parsebin == NULL)
+	if (reader->pipeline == NULL || reader->source == NULL || reader->parsebin == NULL)
 		goto fail;
 
 	reader->bus = gst_element_get_bus (reader->pipeline);
 
 	/* Put all elements in the pipeline and link */
-	gst_bin_add_many (GST_BIN (reader->pipeline), reader->urisource, reader->parsebin, NULL);
+	gst_bin_add_many (GST_BIN (reader->pipeline), reader->source, reader->parsebin, NULL);
 
-	g_signal_connect (reader->urisource, "pad-added", G_CALLBACK (handle_new_urisource_pad), reader);
+#if USE_URISOURCEBIN
+	g_signal_connect (reader->source, "pad-added", G_CALLBACK (handle_new_urisource_pad), reader);
+#else
+	gst_element_link (reader->source, reader->parsebin);
+#endif
+
 	g_signal_connect (reader->parsebin, "pad-added", G_CALLBACK (handle_new_output_pad), reader);
 
 	return reader;
@@ -592,6 +664,21 @@ fail:
 	return NULL;
 }
 
+static bool
+reset_reader(recording_loader *reader)
+{
+	gst_element_set_state (reader->pipeline, GST_STATE_READY);
+	reader->next_stream_id = 0;
+
+	if (gst_element_set_state (reader->pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE) {
+		g_printerr("Failed to reset pipeline\n");
+		return false;
+	}
+
+	return true;
+}
+
+#if USE_URISOURCEBIN
 static gchar *
 canonicalise_uri (const gchar * in)
 {
@@ -600,22 +687,28 @@ canonicalise_uri (const gchar * in)
 
 	return gst_filename_to_uri (in, NULL);
 }
+#endif
 
 bool recording_loader_load(recording_loader *reader, const char *filename_or_uri)
 {
 	bool ret = false;
-	gchar *uri = canonicalise_uri((const gchar *) filename_or_uri);
 
 	/* Start playing */
 	reader->finding_stream_ids = true;
-	g_object_set (reader->urisource, "uri", uri, NULL);
+
+#if USE_URISOURCEBIN
+	gchar *uri = canonicalise_uri((const gchar *) filename_or_uri);
+	g_object_set (reader->source, "uri", uri, NULL);
 	g_free(uri);
+#else
+	g_object_set (reader->source, "location", filename_or_uri, NULL);
+#endif
 
 	if (gst_element_set_state (reader->pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE) {
-		g_print ("Failed to load %s\n", filename_or_uri);
+		g_printerr("Failed to load %s\n", filename_or_uri);
 		goto done;
 	}
-	g_print ("Now playing %s\n", filename_or_uri);
+	GST_INFO("Now playing %s\n", filename_or_uri);
 
 	/* Play the pipeline once to discover stream tags */
 	if (!play_pipeline(reader))
@@ -623,27 +716,22 @@ bool recording_loader_load(recording_loader *reader, const char *filename_or_uri
 
 	/* Check we have all the stream ids */
 	if (!reader_have_all_ids(reader)) {
-		g_print("Failed to find stream IDs for all streams. The recording is damaged\n");
+		g_printerr("Failed to find stream IDs for all streams. The recording is damaged\n");
 		goto done;
 	}
 
-	g_print("Collected stream IDs. Starting parsing.\n");
+	GST_INFO("Collected stream IDs. Starting parsing.\n");
 	reader->finding_stream_ids = false;
 	reader_announce_streams(reader);
 
 	/* Reset and actually parse things now */
-	if (!gst_element_seek_simple (GST_ELEMENT(reader->pipeline), GST_FORMAT_TIME,
-			GST_SEEK_FLAG_FLUSH, 0))
+	if (!reset_reader(reader))
 		goto done;
-
-	/* Clear all other pending messages */
-	gst_bus_set_flushing(reader->bus, TRUE);
-	gst_bus_set_flushing(reader->bus, FALSE);
 
 	if (!play_pipeline(reader))
 		goto done;
 
-	g_print ("Finished playback. Exiting.\n");
+	GST_INFO("Finished playback. Exiting.\n");
 	ret = true;
 
 done:

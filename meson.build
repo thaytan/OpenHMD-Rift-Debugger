@@ -76,6 +76,7 @@ else
 endif
 
 trackersimlib_sources = [
+  'src/lib/recording-simulator.c',
   'src/lib/recording-loader.c',
   'src/lib/recording-data.c',
   'src/lib/utils.c'
@@ -111,6 +112,15 @@ configure_file(input : 'src/OpenHMDVisualiser.gdns.in',
 
 dump_recording = executable('dump-recording',
                       'utils/dump-recording.c',
+                      include_directories : inc,
+                      c_args: c_args,
+                      cpp_args: c_args,
+                      dependencies: ext_deps,
+                      link_with: trackersim_lib,
+                      install : false)
+
+dump_simulation = executable('dump-simulation',
+                      'utils/dump-simulation.c',
                       include_directories : inc,
                       c_args: c_args,
                       cpp_args: c_args,
