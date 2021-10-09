@@ -8,7 +8,9 @@
 
 #define MAX_STREAMS 16
 
-#define USE_URISOURCEBIN 0
+#if GST_CHECK_VERSION(1,19,1)
+#define USE_URISOURCEBIN 1
+#endif
 
 struct recording_loader {
 	GstElement *pipeline;
@@ -611,7 +613,8 @@ link_error:
 		g_print ("Failed to link urisourcebin pad %s with caps %s to output chain\n",
 				pad_name, capsstr);
 
-		gst_caps_unref (caps);
+		if (caps)
+			gst_caps_unref (caps);
 		g_free (capsstr);
 		g_free (pad_name);
 
