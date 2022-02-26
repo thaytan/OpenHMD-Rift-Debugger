@@ -153,6 +153,22 @@ parse_json_point_node(JsonNode *node, data_point *point, GError **error)
     if (!parse_json_quatf(&point->pose.pose.orient, obj, "orient", error))
       return false;
   }
+  else if (g_str_equal(obj_type, "output-pose")) {
+    point->data_type = DATA_POINT_OUTPUT_POSE;
+    point->output_pose.local_ts = json_object_get_int_member(obj, "local-ts");
+    point->output_pose.device_ts = json_object_get_int_member(obj, "device-ts");
+    point->output_pose.last_imu_local_ts = json_object_get_int_member(obj, "last-imu-local-ts");
+
+    if (!parse_json_vec3f(&point->output_pose.pose.pos, obj, "pos", error))
+      return false;
+    if (!parse_json_quatf(&point->output_pose.pose.orient, obj, "orient", error))
+      return false;
+
+    if (!parse_json_vec3f(&point->output_pose.linear_velocity, obj, "lin-vel", error))
+      return false;
+    if (!parse_json_vec3f(&point->output_pose.linear_accel, obj, "lin-accel", error))
+      return false;
+  }
   else if (g_str_equal(obj_type, "frame-start")) {
     point->data_type = DATA_POINT_FRAME_START;
     point->frame_start.local_ts = json_object_get_int_member(obj, "local-ts");

@@ -20,6 +20,7 @@ struct recording_loader_callbacks {
   void (*new_stream)(void *cb_data, recording_loader_stream *stream, recording_stream_type type, const char *stream_name);
   void (*on_json_data)(void *cb_data, recording_loader_stream *stream, uint64_t pts, const char *json_data);
   void (*on_event)(void *cb_data, recording_loader_stream *stream, uint64_t pts, struct data_point *data);
+  void (*on_frame_config)(void *cb_data, recording_loader_stream *stream, int width, int height, int stride);
   bool (*on_encoded_frame)(void *cb_data, recording_loader_stream *stream, uint64_t pts, unsigned char *data, size_t len);
   void (*on_video_frame)(void *cb_data, recording_loader_stream *stream, uint64_t pts, unsigned char *frame_data, size_t frame_len);
 };

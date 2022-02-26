@@ -3,11 +3,13 @@
 
 #include "omath.h"
 #include "rift-tracker-common.h"
-#include "rift-sensor-common.h"
+#include "rift-sensor-device.h"
 #include "rift-sensor-maths.h"
 
 #ifndef __RECORDING_DATA_H__
 #define __RECORDING_DATA_H__
+
+#define RIFT_SENSOR_SERIAL_LEN 32
 
 typedef enum data_point_type data_point_type;
 typedef struct data_point data_point;
@@ -19,6 +21,7 @@ enum data_point_type {
     DATA_POINT_IMU,
     DATA_POINT_EXPOSURE,
     DATA_POINT_POSE,
+    DATA_POINT_OUTPUT_POSE,
     DATA_POINT_FRAME_START,
     DATA_POINT_FRAME_CAPTURED,
     DATA_POINT_FRAME_RELEASE
@@ -111,6 +114,17 @@ struct data_point {
         vec3f capture_rot_error;
         vec3f capture_pos_error;
       } pose;
+
+      struct {
+        uint64_t local_ts;
+        uint64_t device_ts;
+        uint64_t last_imu_local_ts;
+
+        posef pose;
+
+        vec3f linear_velocity;
+        vec3f linear_accel;
+      } output_pose;
     };
 };
 

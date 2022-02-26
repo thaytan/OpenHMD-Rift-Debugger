@@ -51,7 +51,14 @@ json_glib_dep = dependency('json-glib-1.0', required : false)
 
 ext_deps += [ gst_dep, gstvideo_dep, gstapp_dep, json_glib_dep ]
 
-hmdvis_sources += [
+trackersimlib_sources = [
+  'src/lib/recording-simulator.c',
+  'src/lib/recording-loader.c',
+  'src/lib/recording-data.c',
+  'src/lib/utils.c'
+]
+
+trackersimlib_sources += [
     'src/openhmd-compat.c',
     ohmd_src_dir / 'fusion.c',
     ohmd_src_dir / 'exponential-filter.c',
@@ -70,17 +77,10 @@ hmdvis_sources += [
     ohmd_src_dir / 'drv_oculus_rift/rift-sensor-maths.c',
 ]
 if host_machine.system() == 'windows'
-    hmdvis_sources += ohmd_src_dir / 'platform-win32.c'
+    trackersimlib_sources += ohmd_src_dir / 'platform-win32.c'
 else
-    hmdvis_sources += ohmd_src_dir / 'platform-posix.c'
+    trackersimlib_sources += ohmd_src_dir / 'platform-posix.c'
 endif
-
-trackersimlib_sources = [
-  'src/lib/recording-simulator.c',
-  'src/lib/recording-loader.c',
-  'src/lib/recording-data.c',
-  'src/lib/utils.c'
-]
 
 trackersim_lib = library('trackersimlib',
                         trackersimlib_sources,

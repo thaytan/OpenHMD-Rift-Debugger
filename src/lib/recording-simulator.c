@@ -3,6 +3,8 @@
 
 #include "recording-simulator.h"
 #include "recording-loader.h"
+#include "recording-device-simulator.h"
+#include "recording-sensor-simulator.h"
 
 #include "correspondence_search.h"
 #include "rift-tracker-common.h"
@@ -17,12 +19,12 @@ struct recording_simulator {
 	recording_loader *loader;
 
 	int n_sensors;
-	recording_simulator_stream_video *sensors[RIFT_MAX_SENSORS];
+	recording_simulator_stream_video *sensor_video_stream[RIFT_MAX_SENSORS];
 
 	recording_simulator_stream_events *global_metadata;
 
 	int n_devices;
-	recording_simulator_stream_events *tracked_devices[RIFT_MAX_TRACKED_DEVICES];
+	recording_simulator_stream_events *tracked_device_event_stream[RIFT_MAX_TRACKED_DEVICES];
 };
 
 struct recording_simulator_stream {
@@ -34,9 +36,14 @@ struct recording_simulator_stream {
 struct recording_simulator_stream_video {
 	recording_simulator_stream s;
 
+	bool have_stream_config;
+	int width, height, stride;
+
 	bool have_calibration;
-  char serial_no[RIFT_SENSOR_SERIAL_LEN+1];
-  rift_sensor_camera_params calibration;
+	char serial_no[RIFT_SENSOR_SERIAL_LEN+1];
+	rift_sensor_camera_params calibration;
+
+	ohmd_video_frame frame;
 
 	blobwatch* bw;
 	correspondence_search_t *cs;
@@ -133,7 +140,7 @@ static void handle_new_stream(void *cb_data, recording_loader_stream *stream,
 			recording_loader_stream_set_cbdata(stream, sim_stream);
 
 			printf("Found camera stream %d: %s\n", simulator->n_sensors, stream_name);
-			simulator->sensors[simulator->n_sensors++] = sim_stream;
+			simulator->sensor_video_stream[simulator->n_sensors++] = sim_stream;
 			break;
 		}
 		case RECORDING_STREAM_TYPE_GLOBAL_METADATA:
@@ -159,7 +166,7 @@ static void handle_new_stream(void *cb_data, recording_loader_stream *stream,
 			recording_loader_stream_set_cbdata(stream, sim_stream);
 
 			printf("Found event stream %d: %s\n", simulator->n_devices, stream_name);
-			simulator->tracked_devices[simulator->n_devices++] = sim_stream;
+			simulator->tracked_device_event_stream[simulator->n_devices++] = sim_stream;
 			break;
 		}
 	}
@@ -182,13 +189,31 @@ static void handle_on_event(void *cb_data, recording_loader_stream *stream, uint
 	g_queue_push_tail(sim_stream->events, event);
 }
 
+static void on_frame_config(void *cb_data, recording_loader_stream *stream, int width, int height, int stride)
+{
+	recording_simulator_stream_video *sim_stream = recording_loader_stream_get_cbdata(stream);
+	assert (sim_stream != NULL);
+
+	sim_stream->have_stream_config = true;
+	sim_stream->width = width;
+	sim_stream->height = height;
+	sim_stream->stride = stride;
+
+	printf ("Got frame size for camera stream %s width %d height %d stride %d\n", sim_stream->s.stream_name,
+			width, height, stride);
+}
+
 static void handle_video_frame(void *cb_data, recording_loader_stream *stream, uint64_t pts, unsigned char *frame_data, size_t frame_len)
 {
 	recording_simulator *simulator = cb_data;
 	recording_simulator_stream_video *sim_stream = recording_loader_stream_get_cbdata(stream);
 	assert (sim_stream != NULL);
 
-	/* Raw camera frame - do blob analysis */
+	if (!sim_stream->have_stream_config) {
+		g_printerr ("Received video frame for stream %s before config\n", sim_stream->s.stream_name);
+		return;
+	}
+
 	if (!sim_stream->have_calibration) {
 		assert(simulator->global_metadata != NULL);
 		struct recording_simulator_event *calib_event = stream_events_find_sensor_config(simulator->global_metadata, sim_stream->s.stream_name);
@@ -200,7 +225,7 @@ static void handle_video_frame(void *cb_data, recording_loader_stream *stream, u
 
 		struct data_point *calib = &calib_event->data;
 
-    memcpy(sim_stream->serial_no, calib->sensor_config.serial_no, RIFT_SENSOR_SERIAL_LEN+1);
+		memcpy(sim_stream->serial_no, calib->sensor_config.serial_no, RIFT_SENSOR_SERIAL_LEN+1);
 		sim_stream->calibration.is_cv1 = calib->sensor_config.is_cv1;
 		sim_stream->calibration.camera_matrix = calib->sensor_config.camera_matrix;
 
@@ -212,6 +237,19 @@ static void handle_video_frame(void *cb_data, recording_loader_stream *stream, u
 		printf ("Got calibration for camera stream %s\n", sim_stream->s.stream_name);
 
 		sim_stream->have_calibration = true;
+	}
+
+	/* Raw camera frame - do blob analysis */
+	if (sim_stream->bw == NULL) {
+		sim_stream->bw = blobwatch_new(sim_stream->calibration.is_cv1 ? BLOB_THRESHOLD_CV1 : BLOB_THRESHOLD_DK2);
+	}
+
+	blobservation* bwobs = NULL;
+
+	blobwatch_process(sim_stream->bw, frame_data, sim_stream->width, sim_stream->height, 0, NULL, 0, &bwobs);
+
+	if (bwobs) {
+		blobwatch_release_observation(sim_stream->bw, bwobs);
 	}
 }
 
@@ -227,6 +265,7 @@ recording_simulator *recording_simulator_new()
 		.on_json_data = NULL,
 		.on_event = handle_on_event,
 		.on_encoded_frame = NULL,
+		.on_frame_config = on_frame_config,
 		.on_video_frame = handle_video_frame,
 	};
 
@@ -259,10 +298,10 @@ void recording_simulator_free(recording_simulator *sim)
 		stream_events_free(sim->global_metadata);
 
 	for (i = 0; i < sim->n_devices; i++)
-		stream_events_free(sim->tracked_devices[i]);
+		stream_events_free(sim->tracked_device_event_stream[i]);
 
 	for (i = 0; i < sim->n_sensors; i++)
-		stream_video_free(sim->sensors[i]);
+		stream_video_free(sim->sensor_video_stream[i]);
 
 	free(sim);
 }
