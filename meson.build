@@ -17,7 +17,7 @@ hmdvis_sources = [
   'src/module.c',
   'src/openhmdvisualiser.c',
   'src/openhmdsensor.c',
-  'src/openhmddevice.c'
+  'src/openhmddevice.c',
 ]
 
 # OpenHMD files needed for simulation
@@ -55,6 +55,7 @@ trackersimlib_sources = [
   'src/lib/recording-simulator.c',
   'src/lib/recording-loader.c',
   'src/lib/recording-data.c',
+  'src/lib/rift-kalman-6dof-v2.c',
   'src/lib/utils.c'
 ]
 
@@ -71,7 +72,6 @@ trackersimlib_sources += [
     ohmd_src_dir / 'drv_oculus_rift/rift-sensor-opencv.cpp',
     ohmd_src_dir / 'drv_oculus_rift/led_search.c',
     ohmd_src_dir / 'drv_oculus_rift/rift-sensor-pose-helper.c',
-    ohmd_src_dir / 'drv_oculus_rift/rift-kalman-6dof.c',
     ohmd_src_dir / 'drv_oculus_rift/rift-sensor-flicker.c',
     ohmd_src_dir / 'drv_oculus_rift/rift-sensor-blobwatch.c',
     ohmd_src_dir / 'drv_oculus_rift/rift-sensor-maths.c',
