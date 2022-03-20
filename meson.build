@@ -53,6 +53,7 @@ ext_deps += [ gst_dep, gstvideo_dep, gstapp_dep, json_glib_dep ]
 
 trackersimlib_sources = [
   'src/lib/recording-simulator.c',
+  'src/lib/recording-device-simulator.c',
   'src/lib/recording-loader.c',
   'src/lib/recording-data.c',
   'src/lib/rift-kalman-6dof-v2.c',

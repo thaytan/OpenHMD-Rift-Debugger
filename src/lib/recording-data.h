@@ -27,6 +27,10 @@ enum data_point_type {
     DATA_POINT_FRAME_RELEASE
 };
 
+#define MAX_LED_COUNT 45
+
+extern const char *data_point_type_names[];
+
 struct data_point {
     data_point_type data_type;
     uint64_t ts;
@@ -38,9 +42,10 @@ struct data_point {
         rift_tracked_device_imu_calibration imu_calibration;
 
         posef imu_pose;
+        posef model_pose;
 
         int num_leds;
-        rift_led leds[45];
+        rift_led leds[MAX_LED_COUNT];
       } device_id;
 
       struct {
@@ -56,6 +61,7 @@ struct data_point {
         posef pose;
       } sensor_pose;
 
+      /* IMU observation */
       struct {
         uint64_t local_ts;
         uint64_t device_ts;
@@ -73,6 +79,11 @@ struct data_point {
         uint32_t exposure_count;
         uint64_t device_ts;
         int delay_slot;
+
+        posef capture_pose;
+
+        vec3f capture_rot_error;
+        vec3f capture_pos_error;
       } exposure;
 
       struct {
@@ -94,6 +105,7 @@ struct data_point {
         int delay_slot;
       } frame_release;
 
+      /* Model pose (not IMU - needs pose transform before fusion) */
       struct {
         uint64_t local_ts;
         uint64_t device_ts;

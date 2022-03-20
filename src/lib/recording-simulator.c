@@ -31,6 +31,7 @@ struct recording_simulator_stream {
 	recording_stream_type type;
 	recording_simulator *sim;
 	char *stream_name;
+
 };
 
 struct recording_simulator_stream_video {
@@ -43,6 +44,9 @@ struct recording_simulator_stream_video {
 	char serial_no[RIFT_SENSOR_SERIAL_LEN+1];
 	rift_sensor_camera_params calibration;
 
+	bool have_pose;
+	posef pose;
+
 	ohmd_video_frame frame;
 
 	blobwatch* bw;
@@ -52,10 +56,15 @@ struct recording_simulator_stream_video {
 struct recording_simulator_event {
 	uint64_t pts;
 	struct data_point data;
+
+	rift_tracked_device_simulator *device;
 };
 
 struct recording_simulator_stream_events {
 	recording_simulator_stream s;
+
+	/* Device events have a tracked device structure */
+	rift_tracked_device_simulator *device;
 
 	GQueue *events;
 };
@@ -74,22 +83,38 @@ static recording_simulator_stream_events *stream_events_new(
 	return sim_stream;
 }
 
-static gint find_sensor_config(recording_simulator_event *candidate, const char *stream_name)
+struct event_search_info {
+	data_point_type event_type;
+	const char *stream_name;
+};
+
+static gint find_sensor_event(recording_simulator_event *candidate, struct event_search_info *info)
 {
-	if (candidate->data.data_type != DATA_POINT_SENSOR_CONFIG)
+	if (candidate->data.data_type != info->event_type)
 		return 1;
 
-	if (g_str_equal(candidate->data.sensor_config.stream_id, stream_name))
-		return 0;
+	if (info->event_type == DATA_POINT_SENSOR_CONFIG) {
+		if (g_str_equal(candidate->data.sensor_config.stream_id, info->stream_name))
+			return 0;
+	} else if (info->event_type == DATA_POINT_SENSOR_POSE) {
+		if (strstr(info->stream_name, candidate->data.sensor_pose.serial_no) != NULL)
+			return 0;
+	} else {
+		g_assert_not_reached();
+	}
 
 	return 1;
 }
 
 static struct recording_simulator_event *
-stream_events_find_sensor_config(recording_simulator_stream_events *stream,
-	const char *stream_name)
+stream_events_find_sensor_event(recording_simulator_stream_events *stream,
+	data_point_type event_type, const char *stream_name)
 {
-	GList *config = g_queue_find_custom(stream->events, stream_name, (GCompareFunc) find_sensor_config);
+	struct event_search_info info = {
+		event_type, stream_name
+	};
+
+	GList *config = g_queue_find_custom(stream->events, &info, (GCompareFunc) find_sensor_event);
 	if (config)
 		return config->data;
 	return NULL;
@@ -152,7 +177,7 @@ static void handle_new_stream(void *cb_data, recording_loader_stream *stream,
 
 			recording_loader_stream_set_cbdata(stream, sim_stream);
 
-			printf("Found Global metadata event stream %s\n", stream_name);
+			printf("Found Global metadata event stream\n");
 			simulator->global_metadata = sim_stream;
 			break;
 		}
@@ -175,11 +200,10 @@ static void handle_new_stream(void *cb_data, recording_loader_stream *stream,
 static void handle_on_event(void *cb_data, recording_loader_stream *stream, uint64_t pts,
 		struct data_point *data)
 {
-	recording_simulator *simulator = cb_data;
 	recording_simulator_stream_events *sim_stream = recording_loader_stream_get_cbdata(stream);
 	assert (sim_stream != NULL);
 
-	printf("Got event on %s type %d\n", sim_stream->s.stream_name, data->data_type);
+	printf("Got event on %s type %s\n", sim_stream->s.stream_name, data_point_type_names[data->data_type]);
 
 	/* Simulator event - either global (camera configs) or tracked-device tracking */
 	recording_simulator_event *event = malloc(sizeof(recording_simulator_event));
@@ -187,6 +211,48 @@ static void handle_on_event(void *cb_data, recording_loader_stream *stream, uint
 	event->data = *data;
 
 	g_queue_push_tail(sim_stream->events, event);
+
+	switch (data->data_type) {
+		case DATA_POINT_DEVICE_ID:
+			/* Set up the tracked device */
+			if (sim_stream->device != NULL) {
+				g_printerr ("Stream %s has repeated device-id record\n", sim_stream->s.stream_name);
+				break;
+			}
+
+			sim_stream->device = rift_tracked_device_simulator_new(data->device_id.device_id,
+							&data->device_id.imu_calibration, &data->device_id.imu_pose,
+							&data->device_id.model_pose,
+							data->device_id.num_leds, data->device_id.leds);
+			break;
+
+		case DATA_POINT_SENSOR_CONFIG:
+		case DATA_POINT_SENSOR_POSE:
+			/* Just store these for the video streams to collect */
+			break;
+
+		case DATA_POINT_IMU:
+      if (sim_stream->device == NULL) {
+				g_printerr ("Stream %s has imu data before device record\n", sim_stream->s.stream_name);
+				break;
+			}
+      rift_tracked_device_simulator_imu_update(sim_stream->device,
+					data->imu.local_ts, data->imu.device_ts,
+					&data->imu.ang_vel, &data->imu.accel, &data->imu.mag);
+			break;
+		case DATA_POINT_EXPOSURE:
+			break;
+		case DATA_POINT_POSE:
+			break;
+		case DATA_POINT_OUTPUT_POSE:
+			break;
+		case DATA_POINT_FRAME_START:
+			break;
+		case DATA_POINT_FRAME_CAPTURED:
+			break;
+		case DATA_POINT_FRAME_RELEASE:
+			break;
+	}
 }
 
 static void on_frame_config(void *cb_data, recording_loader_stream *stream, int width, int height, int stride)
@@ -216,7 +282,8 @@ static void handle_video_frame(void *cb_data, recording_loader_stream *stream, u
 
 	if (!sim_stream->have_calibration) {
 		assert(simulator->global_metadata != NULL);
-		struct recording_simulator_event *calib_event = stream_events_find_sensor_config(simulator->global_metadata, sim_stream->s.stream_name);
+		struct recording_simulator_event *calib_event =
+				stream_events_find_sensor_event (simulator->global_metadata, DATA_POINT_SENSOR_CONFIG, sim_stream->s.stream_name);
 
 		if (calib_event == NULL) {
 			g_printerr ("Received video frame for stream %s before config\n", sim_stream->s.stream_name);
@@ -237,6 +304,31 @@ static void handle_video_frame(void *cb_data, recording_loader_stream *stream, u
 		printf ("Got calibration for camera stream %s\n", sim_stream->s.stream_name);
 
 		sim_stream->have_calibration = true;
+	}
+
+	if (!sim_stream->have_pose) {
+		assert(simulator->global_metadata != NULL);
+		struct recording_simulator_event *pose_event =
+			stream_events_find_sensor_event (simulator->global_metadata,
+			    DATA_POINT_SENSOR_POSE, sim_stream->s.stream_name);
+
+		if (pose_event == NULL) {
+			// g_printerr ("Received video frame for stream %s before sensor pose\n", sim_stream->s.stream_name);
+			return;
+		}
+
+		struct data_point *pose = &pose_event->data;
+
+		sim_stream->pose = pose->sensor_pose.pose;
+
+		printf("Got pose for camera stream %s. Position %f %f %f, orientation %f %f %f %f\n",
+			sim_stream->s.stream_name,
+			sim_stream->pose.pos.x, sim_stream->pose.pos.y, sim_stream->pose.pos.z,
+			sim_stream->pose.orient.x, sim_stream->pose.orient.y,
+			sim_stream->pose.orient.z, sim_stream->pose.orient.w
+		);
+
+		sim_stream->have_pose = true;
 	}
 
 	/* Raw camera frame - do blob analysis */

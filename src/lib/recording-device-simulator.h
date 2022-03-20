@@ -11,6 +11,7 @@
 
 #include "rift-tracker-common.h"
 #include "rift-kalman-6dof.h"
+#include "exponential-filter.h"
 #include "rift-sensor-pose-helper.h"
 
 /* Number of state slots to use for quat/position updates */
@@ -59,8 +60,8 @@ struct rift_tracked_device_simulator {
 	posef fusion_from_model;
 	posef model_from_fusion;
 
-	uint32_t last_device_ts;
 	uint64_t device_time_ns;
+	uint64_t last_imu_local_ts;
 
 	uint64_t last_observed_orient_ts;
 	uint64_t last_observed_pose_ts;
@@ -70,6 +71,16 @@ struct rift_tracked_device_simulator {
 	uint64_t last_reported_pose;
 	posef reported_pose;
 	posef model_pose;
+
+	exp_filter_pose pose_output_filter;
 };
+
+rift_tracked_device_simulator *rift_tracked_device_simulator_new(
+	int device_id, rift_tracked_device_imu_calibration *imu_calibration,
+	posef *imu_pose, posef *model_pose, int num_leds, rift_led *leds);
+
+void rift_tracked_device_simulator_imu_update(rift_tracked_device_simulator *dev,
+	uint64_t local_ts, uint64_t device_ts,
+	const vec3f* ang_vel, const vec3f* accel, const vec3f* mag_field);
 
 #endif
