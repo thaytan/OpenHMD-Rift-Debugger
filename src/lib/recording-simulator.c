@@ -31,7 +31,6 @@ struct recording_simulator_stream {
 	recording_stream_type type;
 	recording_simulator *sim;
 	char *stream_name;
-
 };
 
 struct recording_simulator_stream_video {
@@ -67,6 +66,9 @@ struct recording_simulator_stream_events {
 	rift_tracked_device_simulator *device;
 
 	GQueue *events;
+
+	/* Last time an output-pose event was seen */
+	uint64_t last_output_pose;
 };
 
 static recording_simulator_stream_events *stream_events_new(
@@ -197,13 +199,55 @@ static void handle_new_stream(void *cb_data, recording_loader_stream *stream,
 	}
 }
 
+static void
+dump_output_pose (recording_simulator_stream_events *sim_stream, bool force, uint64_t local_ts)
+{
+	if (local_ts - sim_stream->last_output_pose < 10000000UL && force == false)
+		return;
+
+	rift_tracked_device_simulator *dev = sim_stream->device;
+
+	posef pose;
+	vec3f ang_vel, lin_accel, lin_vel;
+
+	rift_tracked_device_simulator_get_model_pose(sim_stream->device, local_ts,
+		&pose, &lin_vel, &lin_accel, &ang_vel);
+
+	sim_stream->last_output_pose = local_ts;
+
+	printf ("{ \"type\": \"output-pose\", \"local-ts\": %llu, "
+		"\"device-ts\": %llu, \"last-imu-local-ts\": %llu, "
+		"\"pos\" : [ %f, %f, %f ], "
+		"\"orient\" : [ %f, %f, %f, %f ], "
+		"\"ang-vel\" : [ %f, %f, %f ], "
+		"\"lin-vel\" : [ %f, %f, %f ], "
+		"\"lin-accel\" : [ %f, %f, %f ] "
+		"}\n",
+		(unsigned long long) local_ts,
+		(unsigned long long) dev->device_time_ns,
+		(unsigned long long) dev->last_imu_local_ts,
+		pose.pos.x, pose.pos.y, pose.pos.z,
+
+		pose.orient.x, pose.orient.y,
+		pose.orient.z, pose.orient.w,
+
+		ang_vel.x, ang_vel.y, ang_vel.z,
+
+		lin_vel.x, lin_vel.y, lin_vel.z,
+		lin_accel.x, lin_accel.y, lin_accel.z
+	);
+}
+
 static void handle_on_event(void *cb_data, recording_loader_stream *stream, uint64_t pts,
-		struct data_point *data)
+		struct data_point *data, const char *json_data)
 {
 	recording_simulator_stream_events *sim_stream = recording_loader_stream_get_cbdata(stream);
 	assert (sim_stream != NULL);
 
-	printf("Got event on %s type %s\n", sim_stream->s.stream_name, data_point_type_names[data->data_type]);
+#if 0
+	printf("Got event on %s type %s: %s\n", sim_stream->s.stream_name,
+		data_point_type_names[data->data_type], json_data);
+#endif
 
 	/* Simulator event - either global (camera configs) or tracked-device tracking */
 	recording_simulator_event *event = malloc(sizeof(recording_simulator_event));
@@ -232,25 +276,63 @@ static void handle_on_event(void *cb_data, recording_loader_stream *stream, uint
 			break;
 
 		case DATA_POINT_IMU:
-      if (sim_stream->device == NULL) {
+			if (sim_stream->device == NULL) {
 				g_printerr ("Stream %s has imu data before device record\n", sim_stream->s.stream_name);
 				break;
 			}
-      rift_tracked_device_simulator_imu_update(sim_stream->device,
+			rift_tracked_device_simulator_imu_update(sim_stream->device,
 					data->imu.local_ts, data->imu.device_ts,
 					&data->imu.ang_vel, &data->imu.accel, &data->imu.mag);
+
+			dump_output_pose (sim_stream, false, data->imu.local_ts);
 			break;
 		case DATA_POINT_EXPOSURE:
+			if (sim_stream->device == NULL) {
+				g_printerr ("Stream %s has imu data before device record\n", sim_stream->s.stream_name);
+				break;
+			}
+			rift_tracked_device_simulator_on_exposure (sim_stream->device, data->exposure.local_ts,
+				data->exposure.device_ts, data->exposure.exposure_ts, data->exposure.delay_slot);
 			break;
 		case DATA_POINT_POSE:
+			if (sim_stream->device == NULL) {
+				g_printerr ("Stream %s has imu data before device record\n", sim_stream->s.stream_name);
+				break;
+			}
+
+			rift_tracked_device_simulator_model_pose_update(sim_stream->device,
+					data->pose.local_ts, data->pose.frame_device_ts, data->pose.frame_start_local_ts,
+					data->pose.delay_slot,
+					data->pose.score_flags, data->pose.update_position, data->pose.update_orientation,
+					&data->pose.pose, data->pose.serial_no);
+
+			dump_output_pose (sim_stream, false, data->pose.local_ts);
 			break;
 		case DATA_POINT_OUTPUT_POSE:
+			if (sim_stream->device == NULL)
+				break;
+
+			dump_output_pose (sim_stream, true, data->output_pose.local_ts);
 			break;
 		case DATA_POINT_FRAME_START:
 			break;
 		case DATA_POINT_FRAME_CAPTURED:
+			if (sim_stream->device == NULL) {
+				g_printerr ("Stream %s has imu data before device record\n", sim_stream->s.stream_name);
+				break;
+			}
+			rift_tracked_device_simulator_frame_captured(sim_stream->device, data->frame_captured.local_ts,
+				data->frame_captured.frame_local_ts, data->frame_captured.delay_slot,
+				data->frame_captured.serial_no);
 			break;
 		case DATA_POINT_FRAME_RELEASE:
+			if (sim_stream->device == NULL) {
+				g_printerr ("Stream %s has imu data before device record\n", sim_stream->s.stream_name);
+				break;
+			}
+			rift_tracked_device_simulator_frame_release(sim_stream->device, data->frame_release.local_ts,
+				data->frame_release.frame_local_ts, data->frame_release.delay_slot,
+				data->frame_release.serial_no);
 			break;
 	}
 }

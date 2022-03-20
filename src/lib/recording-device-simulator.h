@@ -50,7 +50,6 @@ struct rift_tracked_device_simulator {
 	rift_kalman_6dof_filter ukf_fusion;
 
 	/* Account keeping for UKF fusion slots */
-	int delay_slot_index;
 	rift_tracker_pose_delay_slot delay_slots[NUM_POSE_DELAY_SLOTS];
 
 	/* The pose of the device relative to the IMU 3D space */
@@ -70,6 +69,10 @@ struct rift_tracked_device_simulator {
 	/* Reported view pose (to the user) and model pose (for the tracking) respectively */
 	uint64_t last_reported_pose;
 	posef reported_pose;
+	vec3f reported_ang_vel;
+	vec3f reported_lin_vel;
+	vec3f reported_lin_accel;
+
 	posef model_pose;
 
 	exp_filter_pose pose_output_filter;
@@ -82,5 +85,20 @@ rift_tracked_device_simulator *rift_tracked_device_simulator_new(
 void rift_tracked_device_simulator_imu_update(rift_tracked_device_simulator *dev,
 	uint64_t local_ts, uint64_t device_ts,
 	const vec3f* ang_vel, const vec3f* accel, const vec3f* mag_field);
+
+void rift_tracked_device_simulator_model_pose_update(rift_tracked_device_simulator *dev,
+	uint64_t local_ts, uint64_t device_ts, uint64_t frame_start_local_ts, int delay_slot,
+  uint32_t score_flags, bool update_position, bool update_orientation,
+	posef *model_pose, const char *source);
+
+void rift_tracked_device_simulator_get_model_pose(rift_tracked_device_simulator *dev, uint64_t local_ts,
+		posef *pose, vec3f *vel, vec3f *accel, vec3f *ang_vel);
+
+void rift_tracked_device_simulator_on_exposure (rift_tracked_device_simulator *dev, uint64_t local_ts,
+	uint64_t device_ts, uint64_t exposure_ts, int delay_slot);
+void rift_tracked_device_simulator_frame_captured (rift_tracked_device_simulator *dev, uint64_t local_ts,
+	uint64_t frame_start_local_ts, int delay_slot, const char *source);
+void rift_tracked_device_simulator_frame_release (rift_tracked_device_simulator *dev, uint64_t local_ts,
+	uint64_t frame_local_ts, int delay_slot, const char *source);
 
 #endif

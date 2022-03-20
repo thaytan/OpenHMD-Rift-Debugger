@@ -378,7 +378,7 @@ handle_json_buffer (recording_loader * reader, recording_loader_stream * stream,
 
     if (reader->callbacks.on_event) {
       reader->callbacks.on_event (reader->callback_data, stream, pts,
-          &data_point);
+          &data_point, json_str);
     }
     g_mutex_unlock (&reader->stream_lock);
   }
