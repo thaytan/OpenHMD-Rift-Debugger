@@ -176,6 +176,10 @@ play_pipeline (struct recording_loader *reader)
     g_free (dbg_info);
     ret = false;
   }
+  else {
+    GST_INFO ("Finishing playback after message %" GST_PTR_FORMAT,
+        msg);
+  }
 
   if (msg != NULL)
     gst_message_unref (msg);
@@ -734,6 +738,10 @@ reset_reader (recording_loader * reader)
 {
   gst_element_set_state (reader->pipeline, GST_STATE_READY);
   reader->next_stream_id = 0;
+
+  /* Clear pending bus messages */
+  gst_bus_set_flushing (reader->bus, TRUE);
+  gst_bus_set_flushing (reader->bus, FALSE);
 
   if (gst_element_set_state (reader->pipeline,
           GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE) {
