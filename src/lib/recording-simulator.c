@@ -1,5 +1,7 @@
 #include <assert.h>
 #include <glib.h>
+#include <stdio.h>
+#include <string.h>
 
 #include "recording-simulator.h"
 #include "recording-loader.h"
@@ -17,6 +19,8 @@ typedef struct recording_simulator_stream_events recording_simulator_stream_even
 
 struct recording_simulator {
 	recording_loader *loader;
+
+	gchar *json_output_dir;
 
 	int n_sensors;
 	recording_simulator_stream_video *sensor_video_stream[RIFT_MAX_SENSORS];
@@ -69,6 +73,9 @@ struct recording_simulator_stream_events {
 
 	/* Last time an output-pose event was seen */
 	uint64_t last_output_pose;
+
+	/* JSON output location */
+	FILE *json_out;
 };
 
 static recording_simulator_stream_events *stream_events_new(
@@ -129,6 +136,9 @@ static void stream_events_free (recording_simulator_stream_events *stream) {
 		g_free(event);
 	}
 	g_queue_free(stream->events);
+
+	if (stream->json_out)
+		fclose (stream->json_out);
 
 	free(stream->s.stream_name);
 	free(stream);
@@ -205,6 +215,9 @@ dump_output_pose (recording_simulator_stream_events *sim_stream, bool force, uin
 	if (local_ts - sim_stream->last_output_pose < 10000000UL && force == false)
 		return;
 
+	if (sim_stream->json_out == NULL)
+		return;
+
 	rift_tracked_device_simulator *dev = sim_stream->device;
 
 	posef pose;
@@ -215,7 +228,7 @@ dump_output_pose (recording_simulator_stream_events *sim_stream, bool force, uin
 
 	sim_stream->last_output_pose = local_ts;
 
-	printf ("{ \"type\": \"output-pose\", \"local-ts\": %llu, "
+	fprintf (sim_stream->json_out, "{ \"type\": \"output-pose\", \"local-ts\": %llu, "
 		"\"device-ts\": %llu, \"last-imu-local-ts\": %llu, "
 		"\"pos\" : [ %f, %f, %f ], "
 		"\"orient\" : [ %f, %f, %f, %f ], "
@@ -241,8 +254,10 @@ dump_output_pose (recording_simulator_stream_events *sim_stream, bool force, uin
 static void handle_on_event(void *cb_data, recording_loader_stream *stream, uint64_t pts,
 		struct data_point *data, const char *json_data)
 {
+	recording_simulator *simulator = cb_data;
 	recording_simulator_stream_events *sim_stream = recording_loader_stream_get_cbdata(stream);
 	assert (sim_stream != NULL);
+	bool print_json = true;
 
 #if 0
 	printf("Got event on %s type %s: %s\n", sim_stream->s.stream_name,
@@ -268,6 +283,17 @@ static void handle_on_event(void *cb_data, recording_loader_stream *stream, uint
 							&data->device_id.imu_calibration, &data->device_id.imu_pose,
 							&data->device_id.model_pose,
 							data->device_id.num_leds, data->device_id.leds);
+
+			if (simulator->json_output_dir != NULL && sim_stream->json_out == NULL) {
+				gchar *json_out_location = g_strdup_printf ("%s/openhmd-device-%d",
+				                             simulator->json_output_dir, data->device_id.device_id);
+
+				printf("Opening output file %s for device %d\n",
+				    json_out_location, data->device_id.device_id);
+
+				sim_stream->json_out = fopen(json_out_location, "w");
+				g_free (json_out_location);
+			}
 			break;
 
 		case DATA_POINT_SENSOR_CONFIG:
@@ -313,6 +339,7 @@ static void handle_on_event(void *cb_data, recording_loader_stream *stream, uint
 				break;
 
 			dump_output_pose (sim_stream, true, data->output_pose.local_ts);
+			print_json = false;
 			break;
 		case DATA_POINT_FRAME_START:
 			break;
@@ -334,6 +361,11 @@ static void handle_on_event(void *cb_data, recording_loader_stream *stream, uint
 				data->frame_release.frame_local_ts, data->frame_release.delay_slot,
 				data->frame_release.serial_no);
 			break;
+	}
+
+	if (print_json) {
+		if (sim_stream->json_out != NULL)
+			fprintf(sim_stream->json_out, "%s\n", json_data);
 	}
 }
 
@@ -427,7 +459,7 @@ static void handle_video_frame(void *cb_data, recording_loader_stream *stream, u
 	}
 }
 
-recording_simulator *recording_simulator_new()
+recording_simulator *recording_simulator_new(const char *json_output_dir)
 {
 	if (!recording_loader_init())
 		return NULL;
@@ -449,6 +481,9 @@ recording_simulator *recording_simulator_new()
 		goto fail;
 	}
 
+	if (json_output_dir)
+		sim->json_output_dir = g_strdup(json_output_dir);
+
 	return sim;
 
 fail:
@@ -467,6 +502,8 @@ void recording_simulator_free(recording_simulator *sim)
 
 	if (sim->loader)
 		recording_loader_free(sim->loader);
+
+	g_free (sim->json_output_dir);
 
 	if (sim->global_metadata)
 		stream_events_free(sim->global_metadata);

@@ -1,3 +1,4 @@
+#include <ctype.h>
 #include <inttypes.h>
 #include <stdio.h>
 #include <string.h>
@@ -10,20 +11,43 @@ int
 main (int argc, char *argv[])
 {
 	recording_simulator *sim = NULL;
+	char *json_out_dir = NULL;
+	int c;
 
-	if (argc < 2 || strcmp(argv[1], "--help") == 0) {
-		printf ("Usage: %s <file>\n", argv[0]);
+	opterr = 0;
+
+	while ((c = getopt (argc, argv, "o:")) != -1) {
+		switch (c) {
+			case 'o':
+				json_out_dir = optarg;
+				break;
+			case '?':
+				if (optopt == 'o')
+					fprintf (stderr, "Option -%c requires an argument.\n", optopt);
+				else if (isprint (optopt))
+					fprintf (stderr, "Unknown option `-%c'.\n", optopt);
+				else
+					fprintf (stderr,
+					    "Unknown option character `\\x%x'.\n", optopt);
+				return 1;
+			default:
+				abort ();
+		}
+	}
+
+	if (optind >= argc || strcmp(argv[optind], "--help") == 0) {
+		printf ("Usage: %s [-o output-dir] <file>\n", argv[0]);
 		return 1;
 	}
 
-	sim = recording_simulator_new();
+	sim = recording_simulator_new(json_out_dir);
 	if (sim == NULL) {
 		printf("Could not start simulator\n");
 		return 2;
 	}
 
-	if (!recording_simulator_load(sim, argv[1])) {
-		printf ("Could not load %s\n", argv[1]);
+	if (!recording_simulator_load(sim, argv[optind])) {
+		printf ("Could not load %s\n", argv[optind]);
 		recording_simulator_free(sim);
 		return 3;
 	}
