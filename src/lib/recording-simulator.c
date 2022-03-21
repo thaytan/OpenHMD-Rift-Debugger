@@ -251,6 +251,106 @@ dump_output_pose (recording_simulator_stream_events *sim_stream, bool force, uin
 	);
 }
 
+static void
+dump_pose_report (recording_simulator_stream_events *sim_stream,
+	struct data_point *data, posef *pose_after)
+{
+	if (sim_stream->json_out == NULL)
+		return;
+
+	fprintf(sim_stream->json_out,
+		"{ \"type\": \"pose\", \"local-ts\": %llu, "
+		"\"device-ts\": %llu, \"frame-start-local-ts\": %llu, "
+		"\"frame-local-ts\": %llu, \"frame-hmd-ts\": %u, "
+		"\"frame-exposure-count\": %u, \"frame-device-ts\": %llu, \"frame-fusion-slot\": %d, "
+		"\"source\": \"%s\", "
+		"\"score-flags\": %d, \"update-position\": %d, \"update-orient\": %d, "
+		"\"pos\" : [ %f, %f, %f ], "
+		"\"orient\" : [ %f, %f, %f, %f ], "
+		"\"capture-pos\" : [ %f, %f, %f ], "
+		"\"capture-orient\" : [ %f, %f, %f, %f ], "
+		"\"posterior-pos\" : [ %f, %f, %f ], "
+		"\"posterior-orient\" : [ %f, %f, %f, %f ], "
+		"\"rot-std-dev\" : [ %f, %f, %f ], "
+		"\"pos-std-dev\" : [ %f, %f, %f ] "
+		"}\n",
+
+		(unsigned long long) data->pose.local_ts,
+		(unsigned long long) data->pose.device_ts,
+		(unsigned long long) data->pose.frame_start_local_ts,
+		(unsigned long long) data->pose.exposure_local_ts,
+		data->pose.exposure_hmd_ts,
+		data->pose.exposure_count,
+		(unsigned long long) data->pose.frame_device_ts,
+		data->pose.delay_slot,
+		data->pose.serial_no,
+		data->pose.score_flags, data->pose.update_position, data->pose.update_orientation,
+
+		data->pose.pose.pos.x, data->pose.pose.pos.y, data->pose.pose.pos.z,
+		data->pose.pose.orient.x, data->pose.pose.orient.y, data->pose.pose.orient.z, data->pose.pose.orient.w,
+
+		data->pose.capture_pose.pos.x, data->pose.capture_pose.pos.y, data->pose.capture_pose.pos.z,
+		data->pose.capture_pose.orient.x, data->pose.capture_pose.orient.y,
+		data->pose.capture_pose.orient.z, data->pose.capture_pose.orient.w,
+
+		pose_after->pos.x, pose_after->pos.y, pose_after->pos.z,
+		pose_after->orient.x, pose_after->orient.y,
+		pose_after->orient.z, pose_after->orient.w,
+
+		data->pose.capture_rot_error.x, data->pose.capture_rot_error.y, data->pose.capture_rot_error.z,
+		data->pose.capture_pos_error.x, data->pose.capture_pos_error.y, data->pose.capture_pos_error.z
+	);
+}
+
+static void dump_imu_report (recording_simulator_stream_events *sim_stream,
+	struct data_point *data,
+	posef *pose_before, vec3f *lin_vel_before, vec3f *lin_accel_before,
+	posef *pose_after, vec3f *lin_vel_after, vec3f *lin_accel_after)
+{
+	if (sim_stream->json_out == NULL)
+		return;
+
+	fprintf(sim_stream->json_out,
+		"{ \"type\": \"imu\", \"local-ts\": %llu, "
+		"\"device-ts\": %llu, \"dt\": %f, "
+		"\"ang_vel\": [ %f, %f, %f ], \"accel\": [ %f, %f, %f ], "
+		"\"mag\": [ %f, %f, %f ], "
+		"\"pose-before\": { "
+		  "\"pos\" : [ %f, %f, %f ], "
+		  "\"orient\" : [ %f, %f, %f, %f ] "
+		" }, "
+		"\"lin-vel-before\": [ %f, %f, %f ], "
+		"\"lin-accel-before\": [ %f, %f, %f ], "
+		"\"pose-after\": { "
+		  "\"pos\" : [ %f, %f, %f ], "
+		  "\"orient\" : [ %f, %f, %f, %f ] "
+		" }, "
+		"\"lin-vel-after\": [ %f, %f, %f ], "
+		"\"lin-accel-after\": [ %f, %f, %f ] "
+		" }\n",
+		(unsigned long long) data->imu.local_ts,
+		(unsigned long long) data->imu.device_ts,
+		data->imu.dt,
+		data->imu.ang_vel.x, data->imu.ang_vel.y, data->imu.ang_vel.z,
+		data->imu.accel.x, data->imu.accel.y, data->imu.accel.z,
+		data->imu.mag.x, data->imu.mag.y, data->imu.mag.z,
+
+		pose_before->pos.x, pose_before->pos.y, pose_before->pos.z,
+		pose_before->orient.x, pose_before->orient.y,
+		pose_before->orient.z, pose_before->orient.w,
+
+		lin_vel_before->x, lin_vel_before->y, lin_vel_before->z,
+		lin_accel_before->x, lin_accel_before->y, lin_accel_before->z,
+
+		pose_after->pos.x, pose_after->pos.y, pose_after->pos.z,
+		pose_after->orient.x, pose_after->orient.y,
+		pose_after->orient.z, pose_after->orient.w,
+
+		lin_vel_after->x, lin_vel_after->y, lin_vel_after->z,
+		lin_accel_after->x, lin_accel_after->y, lin_accel_after->z
+	);
+}
+
 static void handle_on_event(void *cb_data, recording_loader_stream *stream, uint64_t pts,
 		struct data_point *data, const char *json_data)
 {
@@ -301,17 +401,36 @@ static void handle_on_event(void *cb_data, recording_loader_stream *stream, uint
 			/* Just store these for the video streams to collect */
 			break;
 
-		case DATA_POINT_IMU:
+		case DATA_POINT_IMU: {
+
+			posef pose_before, pose_after;
+			vec3f lin_vel_before, lin_accel_before;
+			vec3f lin_vel_after, lin_accel_after;
+
 			if (sim_stream->device == NULL) {
 				g_printerr ("Stream %s has imu data before device record\n", sim_stream->s.stream_name);
 				break;
 			}
+
+			rift_tracked_device_simulator_get_model_pose(sim_stream->device, sim_stream->device->device_time_ns,
+				&pose_before, &lin_vel_before, &lin_accel_before, NULL);
+
 			rift_tracked_device_simulator_imu_update(sim_stream->device,
 					data->imu.local_ts, data->imu.device_ts,
 					&data->imu.ang_vel, &data->imu.accel, &data->imu.mag);
 
+			rift_tracked_device_simulator_get_model_pose(sim_stream->device, sim_stream->device->device_time_ns,
+				&pose_after, &lin_vel_after, &lin_accel_after, NULL);
+
+			/* Replace with updated pose report */
+			dump_imu_report (sim_stream, data,
+				&pose_before, &lin_vel_before, &lin_accel_before,
+				&pose_after, &lin_vel_after, &lin_accel_after);
+			print_json = false;
+
 			dump_output_pose (sim_stream, false, data->imu.local_ts);
 			break;
+		}
 		case DATA_POINT_EXPOSURE:
 			if (sim_stream->device == NULL) {
 				g_printerr ("Stream %s has imu data before device record\n", sim_stream->s.stream_name);
@@ -331,6 +450,15 @@ static void handle_on_event(void *cb_data, recording_loader_stream *stream, uint
 					data->pose.delay_slot,
 					data->pose.score_flags, data->pose.update_position, data->pose.update_orientation,
 					&data->pose.pose, data->pose.serial_no);
+
+			posef pose_after;
+
+			rift_tracked_device_simulator_get_model_pose(sim_stream->device, sim_stream->device->device_time_ns,
+				&pose_after, NULL, NULL, NULL);
+
+			/* Replace with updated pose report */
+			dump_pose_report (sim_stream, data, &pose_after);
+			print_json = false;
 
 			dump_output_pose (sim_stream, false, data->pose.local_ts);
 			break;
