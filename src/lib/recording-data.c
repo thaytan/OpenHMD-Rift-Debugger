@@ -371,7 +371,7 @@ bool json_parse_data_point_string(const char *json_data, data_point *point)
 	JsonParser *parser = json_parser_new();
 	JsonNode *root = NULL;
 	GError *error = NULL;
-	bool ret;
+	bool ret = false;
 
 	if (!json_parser_load_from_data (parser, json_data, -1, &error))
 	{
