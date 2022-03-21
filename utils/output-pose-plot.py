@@ -51,8 +51,12 @@ f = open(sys.argv[1])
 
 events = []
 events_priors = []
-for l in f:
-    js = json.loads(l)
+for i, l in enumerate(f):
+    try:
+        js = json.loads(l)
+    except:
+        print("Error parsing JSON at line {}".format(i))
+
     if js['type'] == 'output-pose':
         events.append(js)
     elif js['type'] == 'exposure':

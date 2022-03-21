@@ -65,8 +65,12 @@ events_priors = []
 events_ignored = []
 events_poses = []
 
-for l in f:
-    js = json.loads(l)
+for i, l in enumerate(f):
+    try:
+        js = json.loads(l)
+    except:
+        print("Error parsing JSON at line {}".format(i))
+
     if js['type'] == 'pose':
         if js['update-position'] == 0:
             events_ignored.append(js)

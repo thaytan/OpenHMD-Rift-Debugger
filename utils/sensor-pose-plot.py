@@ -283,8 +283,12 @@ times_priors = []
 obs = []
 last_obs = None
 
-for l in f:
-    js = json.loads(l)
+for i, l in enumerate(f):
+    try:
+        js = json.loads(l)
+    except:
+        print("Error parsing JSON at line {}".format(i))
+
     obs.append(js)
     for p in js['poses']:
         if p['device'] != device_id:

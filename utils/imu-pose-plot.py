@@ -31,8 +31,12 @@ events_imu = []
 events_poses = []
 events_outputs = []
 
-for l in f:
-    js = json.loads(l)
+for i, l in enumerate(f):
+    try:
+        js = json.loads(l)
+    except:
+        print("Error parsing JSON at line {}".format(i))
+
     if js['type'] == 'imu':
         events_imu.append(js)
     elif js['type'] == 'output-pose':
