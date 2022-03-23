@@ -27,8 +27,10 @@
 /* IMU biases noise levels */
 #define IMU_GYRO_BIAS_NOISE 1e-17 /* gyro bias (rad/s)^2 */
 #define IMU_GYRO_BIAS_NOISE_INITIAL 1e-3 /* gyro bias (rad/s)^2 */
-#define IMU_ACCEL_BIAS_NOISE 1e-16 /* accelerometer bias (m/s^2)^2 */
+#define IMU_ACCEL_BIAS_NOISE 1e-12 /* accelerometer bias (m/s^2)^2 */
 #define IMU_ACCEL_BIAS_NOISE_INITIAL 0.25 /* accelerometer bias (m/s^2)^2 */
+
+#define IMU_ACCEL_PROCESS_NOISE 160.0 /* (m/s^2)^2 */
 
 /* Acceleration and Velocity damping factor (1.0 = undamped) */
 #define ACCEL_DAMP 0.9
@@ -624,7 +626,7 @@ static bool pose_sum_func(const unscented_transform *ut, const matrix2d *Y, cons
 
 void rift_kalman_6dof_init(rift_kalman_6dof_filter *state, posef *init_pose, int num_delay_slots)
 {
-	int i, d;
+	int i;
 
 	assert(num_delay_slots <= MAX_DELAY_SLOTS);
 
@@ -651,7 +653,7 @@ void rift_kalman_6dof_init(rift_kalman_6dof_filter *state, posef *init_pose, int
 	 * like 0.2 (m/s^2)^2. The value here is an experimentally determined
 	 * mid-ground */
 	for (i = COV_ACCEL; i < COV_ACCEL + 3; i++)
-		MATRIX2D_XY(state->Q_noise, i, i) = 160.0;
+		MATRIX2D_XY(state->Q_noise, i, i) = IMU_ACCEL_PROCESS_NOISE;
 
 	/* Gyro and accel bias have very small variance, since we
 	 * want them to change slowly */
@@ -660,13 +662,6 @@ void rift_kalman_6dof_init(rift_kalman_6dof_filter *state, posef *init_pose, int
 
 	for (i = COV_GYRO_BIAS; i < COV_GYRO_BIAS + 3; i++)
 		MATRIX2D_XY(state->Q_noise, i, i) = IMU_GYRO_BIAS_NOISE;
-
-	/* Delay slots - copy the noise from the main slot */
-	for (d = 0; d < num_delay_slots; d++) {
-		int cov_index = BASE_COV_SIZE + (DELAY_SLOT_COV_SIZE * d);
-		for (i = 0; i < 6; i++)
-			MATRIX2D_XY(state->Q_noise, cov_index + i, cov_index + i) = MATRIX2D_XY(state->Q_noise, i, i);
-	}
 
 	/* Takes ownership of Q_noise */
 	ukf_base_init(&state->ukf, STATE_SIZE, COV_SIZE, state->Q_noise, process_func, state_mean_func, state_residual_func, state_sum_func);
@@ -702,7 +697,7 @@ void rift_kalman_6dof_init(rift_kalman_6dof_filter *state, posef *init_pose, int
 	 * the orientation. */
 	ukf_measurement_init(&state->m2, 7, 6, &state->ukf, pose_measurement_func, pose_mean_func, pose_residual_func, pose_sum_func);
 	for (int i = 0; i < 3; i++)
-		MATRIX2D_XY(state->m2.R, i, i) = 0.01 * 0.01; /* 1cm error std dev */
+		MATRIX2D_XY(state->m2.R, i, i) = 0.02 * 0.02; /* 2cm error std dev */
 
 	MATRIX2D_XY(state->m2.R, 3, 3) = (DEG_TO_RAD(90) * DEG_TO_RAD(90)); /* 90 degrees std dev (don't trust observations much for X/Z, 20 degrees for yaw) */
 	MATRIX2D_XY(state->m2.R, 4, 4) = (DEG_TO_RAD(20) * DEG_TO_RAD(20)); /* Y */
@@ -711,7 +706,7 @@ void rift_kalman_6dof_init(rift_kalman_6dof_filter *state, posef *init_pose, int
 	/* m_position is for position-only measurements - no orientation. */
 	ukf_measurement_init(&state->m_position, 3, 3, &state->ukf, position_measurement_func, NULL, NULL, NULL);
 	for (int i = 0; i < 3; i++)
-		MATRIX2D_XY(state->m_position.R, i, i) = 0.01 * 0.01; /* 1cm error std dev */
+		MATRIX2D_XY(state->m_position.R, i, i) = 0.02 * 0.02; /* 2cm error std dev */
 
 	state->reset_slot = -1;
 	state->pose_slot = -1;
@@ -726,31 +721,68 @@ void rift_kalman_6dof_clear(rift_kalman_6dof_filter *state)
 	ukf_base_clear(&state->ukf);
 }
 
+/* Update Q using a piecewise-linear process noise model
+ * for linear acceleration and rotation */
+static void update_Q(rift_kalman_6dof_filter *state, double dt)
+{
+  int i;
+  double dt2 = dt*dt;
+  double dt3 = dt*dt*dt;
+
+  if (dt == 0.0)
+		return;
+
+  assert (dt > 0.0);
+
+  for (i = 0; i < 3; i++) {
+
+	  MATRIX2D_XY(state->Q_noise, COV_POSITION + i, COV_POSITION + i) =
+		    dt2*dt2/4.0 * IMU_ACCEL_PROCESS_NOISE;
+	  MATRIX2D_XY(state->Q_noise, COV_VELOCITY + i, COV_VELOCITY + i) =
+		    dt2 * IMU_ACCEL_PROCESS_NOISE;
+	  MATRIX2D_XY(state->Q_noise, COV_ACCEL + i, COV_ACCEL + i) =
+		    IMU_ACCEL_PROCESS_NOISE;
+
+	  MATRIX2D_XY(state->Q_noise, COV_POSITION + i, COV_VELOCITY + i) =
+		    MATRIX2D_XY(state->Q_noise, COV_VELOCITY + i, COV_POSITION + i) =
+		    dt3 / 2.0 * IMU_ACCEL_PROCESS_NOISE;
+
+	  MATRIX2D_XY(state->Q_noise, COV_POSITION + i, COV_ACCEL + i) =
+		    MATRIX2D_XY(state->Q_noise, COV_ACCEL + i, COV_POSITION + i) =
+		    dt2 / 2.0 * IMU_ACCEL_PROCESS_NOISE;
+	  MATRIX2D_XY(state->Q_noise, COV_VELOCITY + i, COV_ACCEL + i) =
+		    MATRIX2D_XY(state->Q_noise, COV_ACCEL + i, COV_VELOCITY + i) =
+		    dt * IMU_ACCEL_PROCESS_NOISE;
+  }
+}
+
 static void
 rift_kalman_6dof_update(rift_kalman_6dof_filter *state, uint64_t time, ukf_measurement *m)
 {
 	/* Calculate dt */
-	int64_t dt = 0;
+	double dt = 0;
 	if (time != 0) {
 		if (state->first_update) {
 			dt = 0;
 			state->first_update = false;
 		}
 		else {
-			dt = (int64_t)(time - state->current_ts);
+			dt = NS_TO_SEC((int64_t)(time - state->current_ts));
 		}
 		state->current_ts = time;
 	}
 
-	if (!ukf_base_predict(&state->ukf, NS_TO_SEC(dt))) {
-			LOGE ("Failed to compute UKF prediction at time %llu (dt %f)", (unsigned long long) state->current_ts, NS_TO_SEC(dt));
+	update_Q(state, dt);
+
+	if (!ukf_base_predict(&state->ukf, dt)) {
+			LOGE ("Failed to compute UKF prediction at time %llu (dt %f)", (unsigned long long) state->current_ts, dt);
 			return;
 	}
 
 	if (m) {
 		if (!ukf_base_update(&state->ukf, m)) {
 			LOGE ("Failed to perform %s UKF update at time %llu (dt %f)",
-						m == &state->m1 ? "IMU" : "Pose", (unsigned long long) state->current_ts, NS_TO_SEC(dt));
+						m == &state->m1 ? "IMU" : "Pose", (unsigned long long) state->current_ts, dt);
 			return;
 		}
 	}
@@ -758,7 +790,7 @@ rift_kalman_6dof_update(rift_kalman_6dof_filter *state, uint64_t time, ukf_measu
 		/* Pseudo-measurement - just commit the predicted state */
 		if (!ukf_base_commit(&state->ukf)) {
 			LOGE ("Failed to commit UKF prediction at time %llu (dt %f)",
-					(unsigned long long) state->current_ts, NS_TO_SEC(dt));
+					(unsigned long long) state->current_ts, dt);
 			return;
 		}
 	}
