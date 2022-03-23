@@ -33,5 +33,6 @@ void recording_loader_free(recording_loader *reader);
 int recording_loader_stream_id(recording_loader_stream *stream);
 void recording_loader_stream_set_cbdata(recording_loader_stream *stream, void *cb_data);
 void *recording_loader_stream_get_cbdata(recording_loader_stream *stream);
+void recording_loader_stream_set_enabled(recording_loader_stream *stream, bool enabled);
 
 #endif

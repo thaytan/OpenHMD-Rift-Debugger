@@ -176,6 +176,9 @@ static void handle_new_stream(void *cb_data, recording_loader_stream *stream,
 
 			recording_loader_stream_set_cbdata(stream, sim_stream);
 
+			/* Disable video streams for now */
+			recording_loader_stream_set_enabled(stream, false);
+
 			printf("Found camera stream %d: %s\n", simulator->n_sensors, stream_name);
 			simulator->sensor_video_stream[simulator->n_sensors++] = sim_stream;
 			break;

@@ -38,6 +38,8 @@ struct recording_loader_stream
   gint stream_id;
   recording_stream_type stream_type;
 
+  gboolean enabled;
+
   gboolean is_json;
   gboolean at_eos;
   guint frames_decoded;
@@ -268,8 +270,8 @@ handle_demuxed_video_buffer (GstPad * pad, GstPadProbeInfo * info,
   recording_loader_stream *stream = user_data;
   recording_loader *reader = stream->reader;
 
-  /* Don't do anything during initial stream ID pass */
-  if (reader->finding_stream_ids) {
+  /* Don't do anything during initial stream ID pass or for disabled streams */
+  if (reader->finding_stream_ids || !stream->enabled) {
     return GST_PAD_PROBE_DROP;
   }
 
@@ -317,7 +319,7 @@ handle_decoded_video_buffer (recording_loader * reader,
   }
   reader->last_pts = pts;
 
-  if (reader->callbacks.on_video_frame) {
+  if (stream->enabled && reader->callbacks.on_video_frame) {
     reader->callbacks.on_video_frame (reader->callback_data,
         stream, pts, map.data, map.size);
   }
@@ -346,7 +348,7 @@ handle_json_buffer (recording_loader * reader, recording_loader_stream * stream,
     stream->xu = xml_unmarkup_new ();
   json_str = xml_unmarkup_string (stream->xu, (char *) info.data, info.size);
 
-  if (reader->callbacks.on_json_data) {
+  if (stream->enabled && reader->callbacks.on_json_data) {
     reader->callbacks.on_json_data (reader->callback_data, stream, pts,
         json_str);
   }
@@ -376,7 +378,7 @@ handle_json_buffer (recording_loader * reader, recording_loader_stream * stream,
     }
     reader->last_pts = pts;
 
-    if (reader->callbacks.on_event) {
+    if (stream->enabled && reader->callbacks.on_event) {
       reader->callbacks.on_event (reader->callback_data, stream, pts,
           &data_point, json_str);
     }
@@ -461,6 +463,7 @@ gen_output (recording_loader * reader, gboolean is_json)
 
   stream = g_new0 (recording_loader_stream, 1);
 
+  stream->enabled = true;
   stream->reader = reader;
   stream->stream_id = reader->next_stream_id++;
   stream->is_json = is_json;
@@ -854,4 +857,10 @@ void *
 recording_loader_stream_get_cbdata (recording_loader_stream * stream)
 {
   return stream->callback_data;
+}
+
+void
+recording_loader_stream_set_enabled(recording_loader_stream *stream, bool enabled)
+{
+  stream->enabled = enabled;
 }
