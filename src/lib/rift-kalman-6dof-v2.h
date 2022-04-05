@@ -68,7 +68,6 @@ struct rift_kalman_6dof_filter {
   ukf_measurement m_position;
 
   int pose_slot; /* slot number to use for pose update */
-  int reset_slot; /* slot number to reset during process_func if != -1 */
 
   int num_delay_slots;
   bool slot_inuse[MAX_DELAY_SLOTS];

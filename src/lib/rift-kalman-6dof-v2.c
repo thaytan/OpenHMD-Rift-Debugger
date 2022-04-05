@@ -249,17 +249,6 @@ static bool process_func(const ukf_base *ukf, const double dt, const matrix2d *X
 	MATRIX2D_Y(X, STATE_ACCEL_BIAS+1) = accel_bias.y;
 	MATRIX2D_Y(X, STATE_ACCEL_BIAS+2) = accel_bias.z;
 
-	if (filter_state->reset_slot != -1) {
-		/* One of the lagged slot states needs resetting - assign the current orientation and position */
-		int out_index = BASE_STATE_SIZE + (DELAY_SLOT_STATE_SIZE * filter_state->reset_slot);
-		int in_index = STATE_ORIENTATION;
-
-		for (int i = 0; i < DELAY_SLOT_STATE_SIZE; i++) {
-			MATRIX2D_Y(X, out_index) = MATRIX2D_Y(X, in_index);
-			out_index++; in_index++;
-		}
-	}
-
 	return true;
 }
 
@@ -710,7 +699,6 @@ void rift_kalman_6dof_init(rift_kalman_6dof_filter *state, posef *init_pose, int
 	for (int i = 0; i < 3; i++)
 		MATRIX2D_XY(state->m_position.R, i, i) = 0.02 * 0.02; /* 2cm error std dev */
 
-	state->reset_slot = -1;
 	state->pose_slot = -1;
 
 	ovec3d_set(&state->ang_vel, 0.0, 0.0, 0.0);
