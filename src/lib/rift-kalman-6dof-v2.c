@@ -15,6 +15,8 @@
 
 #include "rift-kalman-6dof-v2.h"
 
+#define DUMP_COV_UPDATES 0
+
 /* 0 = constant acceleration
  * 1 = constant velocity
  * 2 = hybrid constant acccel / constant velocity
@@ -798,14 +800,119 @@ rift_kalman_6dof_update(rift_kalman_6dof_filter *state, uint64_t time, ukf_measu
 	// print_col_vec ("UKF Mean after update", state->current_ts, state->ukf.x_prior);
 }
 
+#if DUMP_COV_UPDATES
+static void print_mat(const char *label, const matrix2d *mat)
+{
+    int i, j;
+
+    if (label)
+        printf ("%s: %u rows, %u cols [\n", label, mat->rows, mat->cols);
+
+    for (i = 0; i < mat->rows; i++) {
+        printf ("  [");
+        for (j = 0; j < mat->cols-1; j++) {
+            printf ("%10.5f, ", MATRIX2D_XY(mat, i, j));
+        }
+        printf ("%10.5f ],\n", MATRIX2D_XY(mat, i, j));
+    }
+    printf("]\n");
+}
+#endif
+
 void rift_kalman_6dof_prepare_delay_slot(rift_kalman_6dof_filter *state, uint64_t time, int delay_slot)
 {
-	/* Predict state forward to the timestamp, and set the
-	 * assigned lagged slot state */
+#if DUMP_COV_UPDATES
+	printf ("Initialising slot %d dt %f\n",
+		delay_slot, NS_TO_SEC((int64_t)(time - state->current_ts)));
+
+	if (delay_slot == 0) {
+		print_mat("Prior State", state->ukf.x_prior);
+		print_mat("Prior Cov", state->ukf.P_prior);
+	}
+#endif
+
+	/* If time is not the current time, project the state forward to the timestamp */
+	if (time != state->current_ts)
+		rift_kalman_6dof_update(state, time, NULL);
+
+	/* set up the lagged slot by cloning state and covariance blocks. We
+	 * need to copy the state variables across, and the rows + columns
+	 * of the primary covariance entries */
+
+	/* Copy the rows from the state to the lagged state */
+	if (matrix2d_copy_block_in_place(state->ukf.x_prior,
+	    STATE_ORIENTATION, 0, 7, 1,
+	    BASE_STATE_SIZE + (DELAY_SLOT_STATE_SIZE * delay_slot), 0) != MATRIX_RESULT_OK)
+	{
+			LOGE ("Failed to clone UKF state to delay slot %d at time %llu",
+			    delay_slot, (unsigned long long) time);
+			return;
+	}
+
+	/* Copying the covariance is a little more complex. We need to copy
+	 * the block of rows (AA to CC) and block of columns (AA to DD)
+	 * from the primary state
+	 * to the lagged slot, then copy the covariance of the main
+	 * block (AA) too. There's some duplication here, but it's easier
+	 * than copying each piece separately
+	 *
+	 * +-------------------+
+	 * +AA============BB===+
+	 * +||............||...+
+	 * +||............||...+
+	 * +CC============AA===+
+	 * +||............||...+
+	 * +-------------------+
+	 */
+
+	/* Copy the rows */
+	if (matrix2d_copy_block_in_place(state->ukf.P_prior,
+	    COV_ORIENTATION, 0, 6, state->ukf.P_prior->cols,
+	    BASE_COV_SIZE + (DELAY_SLOT_COV_SIZE * delay_slot), 0) != MATRIX_RESULT_OK)
+	{
+	  LOGE ("Failed to clone UKF covariance rows to delay slot %d at time %llu",
+				delay_slot, (unsigned long long) time);
+		return;
+	}
+
+	/* Copy the columns */
+	if (matrix2d_copy_block_in_place(state->ukf.P_prior,
+	    0, COV_ORIENTATION, state->ukf.P_prior->rows, 6,
+	    0, BASE_COV_SIZE + (DELAY_SLOT_COV_SIZE * delay_slot)) != MATRIX_RESULT_OK)
+	{
+	  LOGE ("Failed to clone UKF covariance columns to delay slot %d at time %llu",
+				delay_slot, (unsigned long long) time);
+		return;
+	}
+
+	/* Copy the block */
+	if (matrix2d_copy_block_in_place(state->ukf.P_prior,
+	    COV_ORIENTATION, COV_ORIENTATION, 6, 6,
+	    BASE_COV_SIZE + (DELAY_SLOT_COV_SIZE * delay_slot),
+	    BASE_COV_SIZE + (DELAY_SLOT_COV_SIZE * delay_slot)) != MATRIX_RESULT_OK)
+	{
+	  LOGE ("Failed to clone UKF covariance to delay slot %d at time %llu",
+				delay_slot, (unsigned long long) time);
+		return;
+	}
+
+	/* Delay slots require some noise added to keep the matrix positive definite */
+	int i;
+	int cov_index = BASE_COV_SIZE + (DELAY_SLOT_COV_SIZE * delay_slot);
+	for (i = 0; i < 6; i++)
+		MATRIX2D_XY(state->ukf.P_prior, cov_index + i, cov_index + i) += 1e-10;
+
+
 	state->slot_inuse[delay_slot] = true;
-	state->reset_slot = delay_slot;
-	rift_kalman_6dof_update(state, time, NULL);
-	state->reset_slot = -1;
+
+
+#if DUMP_COV_UPDATES
+	if (delay_slot == 0) {
+		printf ("Initialised slot 0\n");
+		print_mat("State", state->ukf.x_prior);
+		print_mat("Cov", state->ukf.P_prior);
+	}
+#endif
 }
 
 void rift_kalman_6dof_release_delay_slot(rift_kalman_6dof_filter *state, int delay_slot)
