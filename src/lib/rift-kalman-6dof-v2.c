@@ -32,7 +32,7 @@
 #define IMU_ACCEL_BIAS_NOISE 1e-12 /* accelerometer bias (m/s^2)^2 */
 #define IMU_ACCEL_BIAS_NOISE_INITIAL 0.25 /* accelerometer bias (m/s^2)^2 */
 
-#define IMU_ACCEL_PROCESS_NOISE 160.0 /* (m/s^2)^2 */
+#define IMU_ACCEL_PROCESS_NOISE (70.0*70.0) /* (m/s^2)^2 */
 
 /* Acceleration and Velocity damping factor (1.0 = undamped) */
 #define ACCEL_DAMP 0.9
