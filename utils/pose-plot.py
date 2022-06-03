@@ -106,6 +106,7 @@ if relative_times:
         if len(t) > 0 and t[0] < base_time:
             base_time = t[0]
 
+    base_time = 866957.242079152
     print("Base time: {}".format(base_time))
     t_priors = list(map(lambda t: t - base_time, t_priors))
     t_poses = list(map(lambda t: t - base_time, t_poses))
@@ -126,6 +127,7 @@ else:
     num_cols = 2
 
 fig, axs = plt.subplots(3, num_cols, sharex=True)
+fig.canvas.set_window_title('Pose plot ' + sys.argv[1])
 
 axis_names = ['Roll', 'Pitch', 'Yaw', 'X', 'Y', 'Z', 'vel X', 'vel Y', 'vel Z' ]
 
@@ -166,4 +168,5 @@ for col in range(num_cols):
         axs[i][col].legend(loc='lower right')
 
 fig.tight_layout(pad=0.1)
+plt.subplots_adjust(left=0.05, bottom=0.05, right=0.95, top=0.95, wspace=0.1, hspace=0.1)
 plt.show()
