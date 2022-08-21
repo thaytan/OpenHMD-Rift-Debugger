@@ -25,13 +25,12 @@ struct rift_kalman_6dof_filter {
    *
    *  vec3d position (4:6)
    *  vec3d velocity; (7:9)
-   *  vec3d accel; (10:12)
    *
    * Body frame:
-   *  vec3d angular_velocity (13:15)
+   *  vec3d angular_velocity (10:12)
    *
-   *  vec3d accel-bias; (16:18)
-   *  vec3d gyro-bias (19:21)
+   *  vec3d accel-bias; (13:15)
+   *  vec3d gyro-bias (16:18)
    *
    *  + N lagged slots each:
    *    quatf orientation (quaternion) (0:3)
@@ -45,13 +44,14 @@ struct rift_kalman_6dof_filter {
   bool first_update;
   uint64_t current_ts;
 
-  /* Control vector (gyro reading) */
+  /* Control vectors (gyro and accel reading) */
   vec3d ang_vel;
+  vec3d lin_accel;
 
   /* Process noise */
   matrix2d *Q_noise;
 
-  /* Measurment 1: IMU accel (gyro is in the input vector)
+  /* Measurment 1: IMU accel
    *   vec3f accel
    */
   ukf_measurement m1;

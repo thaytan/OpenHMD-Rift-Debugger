@@ -32,16 +32,12 @@
 #define IMU_ACCEL_BIAS_NOISE 1e-12 /* accelerometer bias (m/s^2)^2 */
 #define IMU_ACCEL_BIAS_NOISE_INITIAL 0.25 /* accelerometer bias (m/s^2)^2 */
 
-#define IMU_ACCEL_PROCESS_NOISE (70.0*70.0) /* (m/s^2)^2 */
+#define IMU_VEL_PROCESS_NOISE (1e-3*1e-3) /* (m/s)^2 */
 
-/* Acceleration and Velocity damping factor (1.0 = undamped) */
-#define ACCEL_DAMP 0.9
+/* Velocity damping factor (1.0 = undamped) */
 #define VEL_DAMP 0.999
 
 #define GRAVITY_MAG 9.80665
-
-/* Maximum sensible acceleration */
-const double MAX_ACCEL = 16.0 * GRAVITY_MAG;
 
 typedef struct imu_filter_state imu_filter_state;
 
@@ -49,8 +45,8 @@ typedef struct imu_filter_state imu_filter_state;
  * matrices, because it includes the quaternion, but
  * the covariance is parameterised with an exponential
  * map */
-const int BASE_STATE_SIZE = 19;
-const int BASE_COV_SIZE = 18;
+const int BASE_STATE_SIZE = 16;
+const int BASE_COV_SIZE = 15;
 
 /* A lagged slot consists of orientation + position */
 const int DELAY_SLOT_STATE_SIZE = 7;
@@ -59,17 +55,16 @@ const int DELAY_SLOT_COV_SIZE = 6;
 #define STATE_ORIENTATION 0
 #define STATE_POSITION 4
 #define STATE_VELOCITY 7
-#define STATE_ACCEL 10
-#define STATE_ACCEL_BIAS 13
-#define STATE_GYRO_BIAS 16
+#define STATE_ACCEL_BIAS 10
+#define STATE_GYRO_BIAS 13
 
 /* Indices into covariance / noise matrices for the state */
 #define COV_ORIENTATION 0
 #define COV_POSITION 3
 #define COV_VELOCITY 6
-#define COV_ACCEL 9
-#define COV_ACCEL_BIAS 12
-#define COV_GYRO_BIAS 15
+#define COV_ACCEL_BIAS 9
+#define COV_GYRO_BIAS 12
+
 /* Indices into a delay slot for orientation and posiion */
 #define DELAY_SLOT_STATE_ORIENTATION 0
 #define DELAY_SLOT_STATE_POSITION 4
@@ -93,7 +88,6 @@ static bool process_func(const ukf_base *ukf, const double dt, const matrix2d *X
 	 *
 	 *	vec3d position (4:6)
 	 *	vec3d velocity; (7:9)
-	 *	vec3d accel; (10:12)
 	 *
 	 *	vec3d angular_velocity (13:15)
 	 *
@@ -152,23 +146,23 @@ static bool process_func(const ukf_base *ukf, const double dt, const matrix2d *X
 	MATRIX2D_Y(X, STATE_ORIENTATION+2) = orient.z;
 	MATRIX2D_Y(X, STATE_ORIENTATION+3) = orient.w;
 
-	vec3d global_accel = {{ MATRIX2D_Y(X_prior, STATE_ACCEL),
-	                        MATRIX2D_Y(X_prior, STATE_ACCEL+1),
-	                        MATRIX2D_Y(X_prior, STATE_ACCEL+2) }};
+#if MOTION_MODEL == 0 || MOTION_MODEL == 2
+	/* Calculate global acceleration given this orientation */
+	vec3d imu_accel = filter_state->lin_accel;
+	vec3d global_accel;
+
+	imu_accel.x -= MATRIX2D_Y(X, STATE_ACCEL_BIAS);
+	imu_accel.y -= MATRIX2D_Y(X, STATE_ACCEL_BIAS+1);
+	imu_accel.z -= MATRIX2D_Y(X, STATE_ACCEL_BIAS+2);
+
+	/* Move IMU body frame into global frame, and subtract gravity */
+	oquatd_get_rotated(&orient, &imu_accel, &global_accel);
+	global_accel.y -= GRAVITY_MAG;
+#endif
 
 	vec3d global_vel = {{ MATRIX2D_Y(X_prior, STATE_VELOCITY),
 	                        MATRIX2D_Y(X_prior, STATE_VELOCITY+1),
 	                        MATRIX2D_Y(X_prior, STATE_VELOCITY+2) }};
-
-	/* Clamp accel to the measurable +/- 16g to restrict variance */
-	global_accel.x = OHMD_CLAMP(global_accel.x, -MAX_ACCEL, MAX_ACCEL);
-	global_accel.y = OHMD_CLAMP(global_accel.y, -MAX_ACCEL, MAX_ACCEL);
-	global_accel.z = OHMD_CLAMP(global_accel.z, -MAX_ACCEL, MAX_ACCEL);
-
-	/* Exponentially damped acceleration */
-	global_accel.x *= ACCEL_DAMP;
-	global_accel.y *= ACCEL_DAMP;
-	global_accel.z *= ACCEL_DAMP;
 
 	global_vel.x *= VEL_DAMP;
 	global_vel.y *= VEL_DAMP;
@@ -229,11 +223,6 @@ static bool process_func(const ukf_base *ukf, const double dt, const matrix2d *X
 #else
 #error "Invalid motion model. MOTION_MODEL must be 0 or 1"
 #endif
-
-	/* Clamped accel */
-	MATRIX2D_Y(X, STATE_ACCEL)   = global_accel.x;
-	MATRIX2D_Y(X, STATE_ACCEL+1) = global_accel.y;
-	MATRIX2D_Y(X, STATE_ACCEL+2) = global_accel.z;
 
 	/* Update velocity */
 	MATRIX2D_Y(X, STATE_VELOCITY)   = global_vel.x;
@@ -462,16 +451,14 @@ static bool state_sum_func(const unscented_transform *ut, const matrix2d *Y, con
 
 static bool imu_measurement_func(const ukf_base *ukf, const ukf_measurement *m, const matrix2d *X, matrix2d *z)
 {
-	/* Measure accel and gyro, plus biases, plus gravity vector from orientation */
-	/* Accel + bias + gravity vector */
+	/* Measure accel and correct the orientation, plus biases,
+	 * by measuring a gravity vector rotated by the expected orientation */
 	quatd orient = {{ MATRIX2D_Y(X, STATE_ORIENTATION),
 	                  MATRIX2D_Y(X, STATE_ORIENTATION+1),
 	                  MATRIX2D_Y(X, STATE_ORIENTATION+2),
 	                  MATRIX2D_Y(X, STATE_ORIENTATION+3) }};
 
-	vec3d global_accel = {{ MATRIX2D_Y(X, STATE_ACCEL),
-	                        MATRIX2D_Y(X, STATE_ACCEL+1) + GRAVITY_MAG,
-	                        MATRIX2D_Y(X, STATE_ACCEL+2) }};
+	vec3d global_accel = {{ 0, GRAVITY_MAG, 0 }};
 	vec3d local_accel;
 
 	/* Move global accel into the IMU body frame, and add bias */
@@ -633,18 +620,9 @@ void rift_kalman_6dof_init(rift_kalman_6dof_filter *state, posef *init_pose, int
 		MATRIX2D_XY(state->Q_noise, i, i) = 1e-5;
 
 	for (i = COV_POSITION; i < COV_POSITION + 3; i++)
-		MATRIX2D_XY(state->Q_noise, i, i) = 1e-4;
+		MATRIX2D_XY(state->Q_noise, i, i) = 1e-6;
 	for (i = COV_VELOCITY; i < COV_VELOCITY + 3; i++)
-		MATRIX2D_XY(state->Q_noise, i, i) = 1e-3;
-
-	/* Accelerometer and Gyro estimates can change sharply -
-	 * even "gentle" motion leads to +/- 5g in a millisecond,
-	 * and gyro can easily change 10dps in a millisecond, but that's
-	 * not the common case. Typical variance for small motions is more
-	 * like 0.2 (m/s^2)^2. The value here is an experimentally determined
-	 * mid-ground */
-	for (i = COV_ACCEL; i < COV_ACCEL + 3; i++)
-		MATRIX2D_XY(state->Q_noise, i, i) = IMU_ACCEL_PROCESS_NOISE;
+		MATRIX2D_XY(state->Q_noise, i, i) = IMU_VEL_PROCESS_NOISE;
 
 	/* Gyro and accel bias have very small variance, since we
 	 * want them to change slowly */
@@ -688,7 +666,7 @@ void rift_kalman_6dof_init(rift_kalman_6dof_filter *state, posef *init_pose, int
 	 * the orientation. */
 	ukf_measurement_init(&state->m2, 7, 6, &state->ukf, pose_measurement_func, pose_mean_func, pose_residual_func, pose_sum_func);
 	for (int i = 0; i < 3; i++)
-		MATRIX2D_XY(state->m2.R, i, i) = 0.02 * 0.02; /* 2cm error std dev */
+		MATRIX2D_XY(state->m2.R, i, i) = 0.01 * 0.01; /* 2cm error std dev */
 
 	MATRIX2D_XY(state->m2.R, 3, 3) = (DEG_TO_RAD(90) * DEG_TO_RAD(90)); /* 90 degrees std dev (don't trust observations much for X/Z, 20 degrees for yaw) */
 	MATRIX2D_XY(state->m2.R, 4, 4) = (DEG_TO_RAD(20) * DEG_TO_RAD(20)); /* Y */
@@ -697,7 +675,7 @@ void rift_kalman_6dof_init(rift_kalman_6dof_filter *state, posef *init_pose, int
 	/* m_position is for position-only measurements - no orientation. */
 	ukf_measurement_init(&state->m_position, 3, 3, &state->ukf, position_measurement_func, NULL, NULL, NULL);
 	for (int i = 0; i < 3; i++)
-		MATRIX2D_XY(state->m_position.R, i, i) = 0.02 * 0.02; /* 2cm error std dev */
+		MATRIX2D_XY(state->m_position.R, i, i) = 0.01 * 0.01; /* 2cm error std dev */
 
 	state->pose_slot = -1;
 
@@ -715,45 +693,33 @@ void rift_kalman_6dof_clear(rift_kalman_6dof_filter *state)
  * for linear acceleration and rotation */
 static void update_Q(rift_kalman_6dof_filter *state, double dt)
 {
-  int i;
+	int i;
 
-  if (dt == 0.0)
+	if (dt == 0.0)
 		return;
 
-  assert (dt > 0.0);
+	assert (dt > 0.0);
 
-  double dt2 = dt*dt/2;
-  double dt3 = dt*dt*dt/2;
-  double dt4 = dt2*dt2;
+	double dt2 = dt*dt;
+	double mu = IMU_VEL_PROCESS_NOISE;
 
-  double mu = IMU_ACCEL_PROCESS_NOISE;
+	/* Constant acceleration discrete noise
+	 *   pos     vel      
+	 * +-----------------+
+	 * | dt^2     dt     | * noise
+	 * | dt       1      |
+	 * +-----------------+
+	 */
+	for (i = 0; i < 3; i++) {
+		int posIndex = COV_POSITION+i;
+		int velIndex = COV_VELOCITY+i;
 
-  /* Constant acceleration discrete noise
-   *   pos     vel      accel
-   * +-------------------------+
-   * | dt^4/4  dt^3/2   dt^2/2 |
-   * | dt^3/2  dt^2     dt     | * noise
-   * | dt^2/2  dt       1      |
-   * +-------------------------+
-   */
+		MATRIX2D_XY(state->Q_noise, posIndex, posIndex) = dt2 * mu;
+		MATRIX2D_XY(state->Q_noise, velIndex, velIndex) = mu;
 
-  for (i = 0; i < 3; i++) {
-    int posIndex = COV_POSITION+i;
-    int velIndex = COV_VELOCITY+i;
-    int accelIndex = COV_ACCEL+i;
-
-	  MATRIX2D_XY(state->Q_noise, posIndex, posIndex) = dt4 * mu;
-	  MATRIX2D_XY(state->Q_noise, velIndex, velIndex) = dt2 * mu;
-	  MATRIX2D_XY(state->Q_noise, accelIndex, accelIndex) = mu;
-
-	  MATRIX2D_XY(state->Q_noise, posIndex, velIndex) =
-		    MATRIX2D_XY(state->Q_noise, velIndex, posIndex) = dt3*mu;
-
-	  MATRIX2D_XY(state->Q_noise, posIndex, accelIndex) =
-		    MATRIX2D_XY(state->Q_noise, accelIndex, posIndex) = dt2 * mu;
-	  MATRIX2D_XY(state->Q_noise, velIndex, accelIndex) =
-		    MATRIX2D_XY(state->Q_noise, accelIndex, velIndex) = dt * mu;
-  }
+		MATRIX2D_XY(state->Q_noise, posIndex, velIndex) =
+		    MATRIX2D_XY(state->Q_noise, velIndex, posIndex) = dt*mu;
+	}
 }
 
 static void
@@ -903,10 +869,9 @@ void rift_kalman_6dof_prepare_delay_slot(rift_kalman_6dof_filter *state, uint64_
 
 	state->slot_inuse[delay_slot] = true;
 
-
 #if DUMP_COV_UPDATES
 	if (delay_slot == 0) {
-		printf ("Initialised slot 0\n");
+		printf ("Initialised slot %d\n", delay_slot);
 		print_mat("State", state->ukf.x_prior);
 		print_mat("Cov", state->ukf.P_prior);
 	}
@@ -926,6 +891,10 @@ void rift_kalman_6dof_imu_update (rift_kalman_6dof_filter *state, uint64_t time,
 	state->ang_vel.x = ang_vel->x;
 	state->ang_vel.y = ang_vel->y;
 	state->ang_vel.z = ang_vel->z;
+	/* and accel */
+	state->lin_accel.x = accel->x;
+	state->lin_accel.y = accel->y;
+	state->lin_accel.z = accel->z;
 
 	/* and acceleration in the measurement vector to correct the orientation by gravity */
 	/* FIXME: Use mag if set? */
@@ -934,7 +903,9 @@ void rift_kalman_6dof_imu_update (rift_kalman_6dof_filter *state, uint64_t time,
 	MATRIX2D_Y(m->z, IMU_MEAS_ACCEL+1) = accel->y;
 	MATRIX2D_Y(m->z, IMU_MEAS_ACCEL+2) = accel->z;
 
-	rift_kalman_6dof_update(state, time, m);
+	/* FIXME: Do a measurement if the device has been stable / quasi-stationary long enough */
+	// rift_kalman_6dof_update(state, time, m);
+	rift_kalman_6dof_update(state, time, NULL);
 }
 
 void rift_kalman_6dof_pose_update(rift_kalman_6dof_filter *state, uint64_t time, posef *pose, int delay_slot)
@@ -1019,10 +990,16 @@ void rift_kalman_6dof_get_delay_slot_pose_at(rift_kalman_6dof_filter *state, uin
 	pose->pos.y = MATRIX2D_Y(x, state_position_index+1);
 	pose->pos.z = MATRIX2D_Y(x, state_position_index+2);
 
-	pose->orient.x = MATRIX2D_Y(x, state_orientation_index);
-	pose->orient.y = MATRIX2D_Y(x, state_orientation_index+1);
-	pose->orient.z = MATRIX2D_Y(x, state_orientation_index+2);
-	pose->orient.w = MATRIX2D_Y(x, state_orientation_index+3);
+	quatd orient = { .x = MATRIX2D_Y(x, state_orientation_index),
+	                 .y = MATRIX2D_Y(x, state_orientation_index+1),
+	                 .z = MATRIX2D_Y(x, state_orientation_index+2),
+	                 .w = MATRIX2D_Y(x, state_orientation_index+3)
+	};
+
+	pose->orient.x = orient.x;
+	pose->orient.y = orient.y;
+	pose->orient.z = orient.z;
+	pose->orient.w = orient.w;
 
 	/* Velocity, accel and ang_vel aren't tracked in the delay slots,
 	 * so always return the current state */
@@ -1033,15 +1010,31 @@ void rift_kalman_6dof_get_delay_slot_pose_at(rift_kalman_6dof_filter *state, uin
 	}
 
 	if (accel) {
-		accel->x = MATRIX2D_Y(x, STATE_ACCEL);
-		accel->y = MATRIX2D_Y(x, STATE_ACCEL+1);
-		accel->z = MATRIX2D_Y(x, STATE_ACCEL+2);
+		/* Global accel calculated from the IMU accel,
+		 * minus bias and rotated to the inertial frame,
+		 * then subtract gravity */
+		vec3d imu_accel = state->lin_accel;
+		vec3d global_accel;
+
+		imu_accel.x -= MATRIX2D_Y(x, STATE_ACCEL_BIAS);
+		imu_accel.y -= MATRIX2D_Y(x, STATE_ACCEL_BIAS+1);
+		imu_accel.z -= MATRIX2D_Y(x, STATE_ACCEL_BIAS+2);
+
+		/* Move IMU body frame into global frame, and subtract gravity */
+		oquatd_get_rotated(&orient, &imu_accel, &global_accel);
+
+		global_accel.y -= GRAVITY_MAG;
+
+		/* Convert to vec3f for output */
+		accel->x = global_accel.x;
+		accel->y = global_accel.y;
+		accel->z = global_accel.z;
 	}
 
 	if (ang_vel) {
-	  ang_vel->x = state->ang_vel.x;
-	  ang_vel->y = state->ang_vel.y;
-	  ang_vel->z = state->ang_vel.z;
+		ang_vel->x = state->ang_vel.x;
+		ang_vel->y = state->ang_vel.y;
+		ang_vel->z = state->ang_vel.z;
 	}
 
 	if (pos_error) {
