@@ -716,33 +716,43 @@ void rift_kalman_6dof_clear(rift_kalman_6dof_filter *state)
 static void update_Q(rift_kalman_6dof_filter *state, double dt)
 {
   int i;
-  double dt2 = dt*dt;
-  double dt3 = dt*dt*dt;
 
   if (dt == 0.0)
 		return;
 
   assert (dt > 0.0);
 
+  double dt2 = dt*dt/2;
+  double dt3 = dt*dt*dt/2;
+  double dt4 = dt2*dt2;
+
+  double mu = IMU_ACCEL_PROCESS_NOISE;
+
+  /* Constant acceleration discrete noise
+   *   pos     vel      accel
+   * +-------------------------+
+   * | dt^4/4  dt^3/2   dt^2/2 |
+   * | dt^3/2  dt^2     dt     | * noise
+   * | dt^2/2  dt       1      |
+   * +-------------------------+
+   */
+
   for (i = 0; i < 3; i++) {
+    int posIndex = COV_POSITION+i;
+    int velIndex = COV_VELOCITY+i;
+    int accelIndex = COV_ACCEL+i;
 
-	  MATRIX2D_XY(state->Q_noise, COV_POSITION + i, COV_POSITION + i) =
-		    dt2*dt2/4.0 * IMU_ACCEL_PROCESS_NOISE;
-	  MATRIX2D_XY(state->Q_noise, COV_VELOCITY + i, COV_VELOCITY + i) =
-		    dt2 * IMU_ACCEL_PROCESS_NOISE;
-	  MATRIX2D_XY(state->Q_noise, COV_ACCEL + i, COV_ACCEL + i) =
-		    IMU_ACCEL_PROCESS_NOISE;
+	  MATRIX2D_XY(state->Q_noise, posIndex, posIndex) = dt4 * mu;
+	  MATRIX2D_XY(state->Q_noise, velIndex, velIndex) = dt2 * mu;
+	  MATRIX2D_XY(state->Q_noise, accelIndex, accelIndex) = mu;
 
-	  MATRIX2D_XY(state->Q_noise, COV_POSITION + i, COV_VELOCITY + i) =
-		    MATRIX2D_XY(state->Q_noise, COV_VELOCITY + i, COV_POSITION + i) =
-		    dt3 / 2.0 * IMU_ACCEL_PROCESS_NOISE;
+	  MATRIX2D_XY(state->Q_noise, posIndex, velIndex) =
+		    MATRIX2D_XY(state->Q_noise, velIndex, posIndex) = dt3*mu;
 
-	  MATRIX2D_XY(state->Q_noise, COV_POSITION + i, COV_ACCEL + i) =
-		    MATRIX2D_XY(state->Q_noise, COV_ACCEL + i, COV_POSITION + i) =
-		    dt2 / 2.0 * IMU_ACCEL_PROCESS_NOISE;
-	  MATRIX2D_XY(state->Q_noise, COV_VELOCITY + i, COV_ACCEL + i) =
-		    MATRIX2D_XY(state->Q_noise, COV_ACCEL + i, COV_VELOCITY + i) =
-		    dt * IMU_ACCEL_PROCESS_NOISE;
+	  MATRIX2D_XY(state->Q_noise, posIndex, accelIndex) =
+		    MATRIX2D_XY(state->Q_noise, accelIndex, posIndex) = dt2 * mu;
+	  MATRIX2D_XY(state->Q_noise, velIndex, accelIndex) =
+		    MATRIX2D_XY(state->Q_noise, accelIndex, velIndex) = dt * mu;
   }
 }
 
