@@ -8,9 +8,15 @@
 #include "recording-device-simulator.h"
 #include "recording-sensor-simulator.h"
 
-#include "correspondence_search.h"
 #include "rift-tracker-common.h"
-#include "rift-sensor-blobwatch.h"
+
+/* The recording simulator has 2 modes of operation: full or partial simulation.
+ *
+ * In a full simulation, the video frames are extracted from the recording
+ * and full blob / pose extraction are executed. In a partial simulation,
+ * the video frames are ignored and the pose data from the recording events
+ * are used to re-run the filtering, for testing new filtering parameters
+ */
 
 typedef struct recording_simulator_stream recording_simulator_stream;
 typedef struct recording_simulator_stream_video recording_simulator_stream_video;
@@ -21,6 +27,7 @@ struct recording_simulator {
 	recording_loader *loader;
 
 	gchar *json_output_dir;
+	bool full_simulation;
 
 	int n_sensors;
 	recording_simulator_stream_video *sensor_video_stream[RIFT_MAX_SENSORS];
@@ -50,10 +57,7 @@ struct recording_simulator_stream_video {
 	bool have_pose;
 	posef pose;
 
-	ohmd_video_frame frame;
-
-	blobwatch* bw;
-	correspondence_search_t *cs;
+	recording_simulator_sensor *sensor;
 };
 
 struct recording_simulator_event {
@@ -176,8 +180,10 @@ static void handle_new_stream(void *cb_data, recording_loader_stream *stream,
 
 			recording_loader_stream_set_cbdata(stream, sim_stream);
 
-			/* Disable video streams for now */
-			recording_loader_stream_set_enabled(stream, false);
+			/* If we're not doing a full simulation, disable decode
+			 * of the video stream */
+			if (!simulator->full_simulation)
+				recording_loader_stream_set_enabled(stream, false);
 
 			printf("Found camera stream %d: %s\n", simulator->n_sensors, stream_name);
 			simulator->sensor_video_stream[simulator->n_sensors++] = sim_stream;
@@ -363,8 +369,9 @@ static void handle_on_event(void *cb_data, recording_loader_stream *stream, uint
 	bool print_json = true;
 
 #if 0
-	printf("Got event on %s type %s: %s\n", sim_stream->s.stream_name,
-		data_point_type_names[data->data_type], json_data);
+	printf("Got event PTS %" G_GUINT64_FORMAT " on %s type %s: %s\n",
+	    pts, sim_stream->s.stream_name,
+	    data_point_type_names[data->data_type], json_data);
 #endif
 
 	/* Simulator event - either global (camera configs) or tracked-device tracking */
@@ -386,7 +393,6 @@ static void handle_on_event(void *cb_data, recording_loader_stream *stream, uint
 							&data->device_id.imu_calibration, &data->device_id.imu_pose,
 							&data->device_id.model_pose,
 							data->device_id.num_leds, data->device_id.leds);
-
 			if (simulator->json_output_dir != NULL && sim_stream->json_out == NULL) {
 				gchar *json_out_location = g_strdup_printf ("%s/openhmd-device-%d",
 				                             simulator->json_output_dir, data->device_id.device_id);
@@ -436,7 +442,7 @@ static void handle_on_event(void *cb_data, recording_loader_stream *stream, uint
 		}
 		case DATA_POINT_EXPOSURE:
 			if (sim_stream->device == NULL) {
-				g_printerr ("Stream %s has imu data before device record\n", sim_stream->s.stream_name);
+				g_printerr ("Stream %s has imu data before device ID record\n", sim_stream->s.stream_name);
 				break;
 			}
 			rift_tracked_device_simulator_on_exposure (sim_stream->device, data->exposure.local_ts,
@@ -519,6 +525,7 @@ static void handle_video_frame(void *cb_data, recording_loader_stream *stream, u
 	recording_simulator *simulator = cb_data;
 	recording_simulator_stream_video *sim_stream = recording_loader_stream_get_cbdata(stream);
 	assert (sim_stream != NULL);
+	assert (simulator->full_simulation);
 
 	if (!sim_stream->have_stream_config) {
 		g_printerr ("Received video frame for stream %s before config\n", sim_stream->s.stream_name);
@@ -544,7 +551,14 @@ static void handle_video_frame(void *cb_data, recording_loader_stream *stream, u
 		memcpy(sim_stream->calibration.dist_coeffs, calib->sensor_config.dist_coeffs,
 				sizeof(calib->sensor_config.dist_coeffs));
 
-		/* FIXME: Set calibration width/height */
+		/* Check the video width/height makes sense and set it into the calibration width/height */
+		if (calib->sensor_config.is_cv1) {
+			assert (sim_stream->width == 1280);
+			assert (sim_stream->height == 960);
+		}
+
+		sim_stream->calibration.width = sim_stream->width;
+		sim_stream->calibration.height = sim_stream->height;
 
 		printf ("Got calibration for camera stream %s\n", sim_stream->s.stream_name);
 
@@ -576,21 +590,34 @@ static void handle_video_frame(void *cb_data, recording_loader_stream *stream, u
 		sim_stream->have_pose = true;
 	}
 
-	/* Raw camera frame - do blob analysis */
-	if (sim_stream->bw == NULL) {
-		sim_stream->bw = blobwatch_new(sim_stream->calibration.is_cv1 ? BLOB_THRESHOLD_CV1 : BLOB_THRESHOLD_DK2);
+	/* We have calibration and pose, create the sensor simulator now if needed */
+	if (sim_stream->sensor == NULL) {
+		sim_stream->sensor = recording_simulator_sensor_new(sim_stream->serial_no,
+		    &sim_stream->calibration, &sim_stream->pose);
 	}
 
-	blobservation* bwobs = NULL;
+	/* And process the frame */
+#if 1
+	printf("Got video frame for sensor %s PTS %" G_GUINT64_FORMAT "\n",
+	    sim_stream->serial_no, pts);
+#endif
 
-	blobwatch_process(sim_stream->bw, frame_data, sim_stream->width, sim_stream->height, 0, NULL, 0, &bwobs);
+	assert (frame_len == sim_stream->stride * sim_stream->height);
 
-	if (bwobs) {
-		blobwatch_release_observation(sim_stream->bw, bwobs);
-	}
+	ohmd_video_frame *frame = calloc(1, sizeof(ohmd_video_frame));
+
+	frame->format = OHMD_VIDEO_FRAME_FORMAT_GRAY8;
+	frame->pts = frame->start_ts = pts;
+	frame->data = frame_data;
+	frame->data_block_size = frame->data_size = frame_len;
+	frame->stride = sim_stream->stride;
+	frame->width = sim_stream->width;
+	frame->height = sim_stream->height;
+
+	recording_simulator_sensor_process_frame(sim_stream->sensor, frame);
 }
 
-recording_simulator *recording_simulator_new(const char *json_output_dir)
+recording_simulator *recording_simulator_new(const char *json_output_dir, bool full_simulation)
 {
 	if (!recording_loader_init())
 		return NULL;
@@ -614,6 +641,8 @@ recording_simulator *recording_simulator_new(const char *json_output_dir)
 
 	if (json_output_dir)
 		sim->json_output_dir = g_strdup(json_output_dir);
+
+	sim->full_simulation = full_simulation;
 
 	return sim;
 

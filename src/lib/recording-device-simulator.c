@@ -181,3 +181,12 @@ void rift_tracked_device_simulator_get_model_pose(rift_tracked_device_simulator 
 		*vel = dev->reported_lin_vel;
 }
 
+/* Rift pose search calls this to get updates of the latest pose, which makes
+ * sense in the real-time system with asynchronous and overlapping pose updates
+ * happening, but for here where all pose search is synchronous, we don't
+ * update anything and just return TRUE
+ */
+bool rift_tracked_device_get_latest_exposure_info_pose (rift_tracked_device *dev_base, rift_tracked_device_exposure_info *dev_info)
+{
+	return true;
+}

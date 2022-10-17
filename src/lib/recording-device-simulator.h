@@ -10,7 +10,7 @@
 #define __RECORDING_DEVICE_SIMULATOR_H__
 
 #include "rift-tracker-common.h"
-#include "rift-kalman-6dof.h"
+#include "rift-kalman-6dof-v2.h"
 #include "exponential-filter.h"
 #include "rift-sensor-pose-helper.h"
 

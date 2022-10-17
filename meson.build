@@ -54,6 +54,7 @@ ext_deps += [ gst_dep, gstvideo_dep, gstapp_dep, json_glib_dep ]
 trackersimlib_sources = [
   'src/lib/recording-simulator.c',
   'src/lib/recording-device-simulator.c',
+  'src/lib/recording-sensor-simulator.c',
   'src/lib/recording-loader.c',
   'src/lib/recording-data.c',
   'src/lib/rift-kalman-6dof-v2.c',
@@ -73,9 +74,11 @@ trackersimlib_sources += [
     ohmd_src_dir / 'drv_oculus_rift/rift-sensor-opencv.cpp',
     ohmd_src_dir / 'drv_oculus_rift/led_search.c',
     ohmd_src_dir / 'drv_oculus_rift/rift-sensor-pose-helper.c',
+    ohmd_src_dir / 'drv_oculus_rift/rift-sensor-pose-search.c',
     ohmd_src_dir / 'drv_oculus_rift/rift-sensor-flicker.c',
     ohmd_src_dir / 'drv_oculus_rift/rift-sensor-blobwatch.c',
     ohmd_src_dir / 'drv_oculus_rift/rift-sensor-maths.c',
+    # ohmd_src_dir / 'drv_oculus_rift/rift-kalman-6dof.c',
 ]
 if host_machine.system() == 'windows'
     trackersimlib_sources += ohmd_src_dir / 'platform-win32.c'

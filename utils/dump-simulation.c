@@ -12,12 +12,16 @@ main (int argc, char *argv[])
 {
 	recording_simulator *sim = NULL;
 	char *json_out_dir = NULL;
+	bool full_simulation = false; // reprocess all video blobs
 	int c;
 
 	opterr = 0;
 
-	while ((c = getopt (argc, argv, "o:")) != -1) {
+	while ((c = getopt (argc, argv, "fo:")) != -1) {
 		switch (c) {
+			case 'f':
+	      full_simulation = true;
+	      break;
 			case 'o':
 				json_out_dir = optarg;
 				break;
@@ -40,7 +44,7 @@ main (int argc, char *argv[])
 		return 1;
 	}
 
-	sim = recording_simulator_new(json_out_dir);
+	sim = recording_simulator_new(json_out_dir, full_simulation);
 	if (sim == NULL) {
 		printf("Could not start simulator\n");
 		return 2;
