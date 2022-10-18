@@ -71,6 +71,9 @@ struct rift_kalman_6dof_filter {
 
   int num_delay_slots;
   bool slot_inuse[MAX_DELAY_SLOTS];
+
+  uint64_t quasi_stationary_ts;
+  uint64_t last_imu_update_ts;
 };
 
 void rift_kalman_6dof_init(rift_kalman_6dof_filter *state, posef *init_pose, int num_delay_slots);
