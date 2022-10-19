@@ -40,6 +40,8 @@ struct rift_kalman_6dof_filter {
   /* ukf_base needs to be the first element in the struct */
   ukf_base ukf;
 
+  int device_id;
+
   /* Current time tracking */
   bool first_update;
   uint64_t current_ts;

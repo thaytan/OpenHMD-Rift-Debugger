@@ -25,6 +25,8 @@ rift_tracked_device_simulator *rift_tracked_device_simulator_new(
 	dev->base.id = device_id;
 
 	rift_kalman_6dof_init(&dev->ukf_fusion, &init_pose, NUM_POSE_DELAY_SLOTS);
+	dev->ukf_fusion.device_id = device_id;
+
 	dev->last_reported_pose = dev->last_observed_orient_ts = dev->last_observed_pose_ts = dev->device_time_ns = 0;
 
 	exp_filter_pose_init(&dev->pose_output_filter);

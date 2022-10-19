@@ -811,7 +811,7 @@ void rift_kalman_6dof_prepare_delay_slot(rift_kalman_6dof_filter *state, uint64_
 	}
 
 	/* Copying the covariance is a little more complex. We need to copy
-	 * the block of rows (AA to CC) and block of columns (AA to DD)
+	 * the block of rows (AA to CC) and block of columns (AA to BB)
 	 * from the primary state
 	 * to the lagged slot, then copy the covariance of the main
 	 * block (AA) too. There's some duplication here, but it's easier
@@ -914,8 +914,8 @@ void rift_kalman_6dof_imu_update (rift_kalman_6dof_filter *state, uint64_t time,
 			fabs(ovec3d_get_length(&unbiased_accel) - GRAVITY_MAG) > 0.5f ||
 			ovec3d_get_length(&unbiased_gyro) > 0.1f) {
 #if 0
-		printf("Resetting quasi stationary ts after %f with accel %f bias %f %f %f gyro %f bias %f %f %f\n",
-				NS_TO_SEC(time - state->quasi_stationary_ts),
+		printf("Device %d Resetting quasi stationary ts after %f with accel %f bias %f %f %f gyro %f bias %f %f %f\n",
+				state->device_id, NS_TO_SEC(time - state->quasi_stationary_ts),
 				ovec3d_get_length(&unbiased_accel) - GRAVITY_MAG,
 				accel_bias.x, accel_bias.y, accel_bias.z,
 				ovec3d_get_length(&unbiased_gyro),
@@ -933,8 +933,8 @@ void rift_kalman_6dof_imu_update (rift_kalman_6dof_filter *state, uint64_t time,
 		MATRIX2D_Y(m->z, IMU_MEAS_ACCEL+1) = accel->y;
 		MATRIX2D_Y(m->z, IMU_MEAS_ACCEL+2) = accel->z;
 
-		printf("TS %f IMU measurement after %f with accel mag %f bias %f %f %f gyro %f bias %f %f %f\n",
-				NS_TO_SEC(time),
+		printf("Device %d TS %f IMU measurement after %f with accel mag %f bias %f %f %f gyro %f bias %f %f %f\n",
+				state->device_id, NS_TO_SEC(time),
 				NS_TO_SEC(time - state->last_imu_update_ts),
 				ovec3d_get_length(&unbiased_accel) - GRAVITY_MAG,
 				accel_bias.x, accel_bias.y, accel_bias.z,
@@ -955,8 +955,6 @@ void rift_kalman_6dof_imu_update (rift_kalman_6dof_filter *state, uint64_t time,
 
 void rift_kalman_6dof_pose_update(rift_kalman_6dof_filter *state, uint64_t time, posef *pose, int delay_slot)
 {
-	ukf_measurement *m;
-
 	/* Use lagged state vector entries to correct for delay */
 	state->pose_slot = delay_slot;
 
@@ -970,7 +968,10 @@ void rift_kalman_6dof_pose_update(rift_kalman_6dof_filter *state, uint64_t time,
 		time = 0;
 	}
 
-	m = &state->m2;
+#if 0
+	return rift_kalman_6dof_position_update(state, time, &pose->pos, delay_slot);
+#else
+	ukf_measurement *m = &state->m2;
 	MATRIX2D_Y(m->z, POSE_MEAS_POSITION+0) = pose->pos.x;
 	MATRIX2D_Y(m->z, POSE_MEAS_POSITION+1) = pose->pos.y;
 	MATRIX2D_Y(m->z, POSE_MEAS_POSITION+2) = pose->pos.z;
@@ -981,6 +982,7 @@ void rift_kalman_6dof_pose_update(rift_kalman_6dof_filter *state, uint64_t time,
 	MATRIX2D_Y(m->z, POSE_MEAS_ORIENTATION+3) = pose->orient.w;
 
 	rift_kalman_6dof_update(state, time, m);
+#endif
 }
 
 void rift_kalman_6dof_position_update(rift_kalman_6dof_filter *state, uint64_t time, vec3f *pos, int delay_slot)
