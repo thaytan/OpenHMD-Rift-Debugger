@@ -18,6 +18,9 @@ display_frame_time = False
 relative_times = True
 
 def euler_from_quaternion(in_orient):
+    if in_orient[3] < 0:
+        in_orient = [v * -1 for v in in_orient]
+
     orient = np.quaternion(in_orient[3], *in_orient[0:3])
     return quaternion.as_euler_angles(orient)
 
