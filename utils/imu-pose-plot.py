@@ -22,7 +22,8 @@ def euler_from_quaternion(in_orient):
         in_orient = [v * -1 for v in in_orient]
 
     orient = np.quaternion(in_orient[3], *in_orient[0:3])
-    return quaternion.as_euler_angles(orient)
+    a = quaternion.as_euler_angles(orient)
+    return [((v+math.pi) % (2*math.pi)) - math.pi for v in a]
 
 if len(sys.argv) < 2:
     print("Usage: {} openhmd-device-trace".format(sys.argv[0]))
