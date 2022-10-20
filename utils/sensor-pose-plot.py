@@ -46,6 +46,17 @@ def correct_pose(o):
     t, R, error_t, error_R = cvutil.refine_pose(models.ledmodels[device_id], fb, in_pos, orient, cam['M'], cam['K'], reproj_thresh)
 
     q = quaternion.from_rotation_matrix(R)
+
+    # Rotate corrected pose 180°
+    if device_id == 0:
+        print("Rotating quat",q)
+        try:
+            q = quaternion.from_rotation_matrix(quaternion.as_rotation_matrix(q) @ quaternion.as_rotation_matrix(np.quaternion(0.0, 0.0, 1.0, 0.0)))
+        except Exception as e:
+            print(e)
+
+        print("Rotated quat",q)
+
     return t, (q.x, q.y, q.z, q.w)
 
 def dump_frame(o, verbose=False, plot_points=False):
@@ -217,37 +228,15 @@ def dump_obs(obs, ts):
 def filter_blobs(device_id, blobs):
     return list(filter(lambda b: (b['device'] == device_id), blobs))
 
-def euler_from_quaternion(quat):
+def euler_from_quaternion(in_orient):
     global device_id
 
-    """
-    Convert a quaternion into euler angles (roll, pitch, yaw)
-    roll is rotation around x in radians (counterclockwise)
-    pitch is rotation around y in radians (counterclockwise)
-    yaw is rotation around z in radians (counterclockwise)
-    """
-    (x, y, z, w) = quat
-    t0 = +2.0 * (w * x + y * z)
-    t1 = +1.0 - 2.0 * (x * x + y * y)
-    roll_x = math.atan2(t0, t1)
+    if in_orient[3] < 0:
+        in_orient = [v * -1 for v in in_orient]
 
-    t2 = +2.0 * (w * y - z * x)
-    t2 = +1.0 if t2 > +1.0 else t2
-    t2 = -1.0 if t2 < -1.0 else t2
-    pitch_y = math.asin(t2)
-
-    t3 = +2.0 * (w * z + x * y)
-    t4 = +1.0 - 2.0 * (y * y + z * z)
-    yaw_z = math.atan2(t3, t4)
-
-    # Manual adjustments to avoid unecessary
-    # wraparounds in the typical range of our data
-    if roll_x < 0:
-        roll_x += 2 * math.pi
-    if pitch_y < -math.pi/2:
-        pitch_y += 2 * math.pi
-    if yaw_z < 0:
-        yaw_z += 2 * math.pi
+    orient = np.quaternion(in_orient[3], *in_orient[0:3])
+    a = quaternion.as_euler_angles(orient)
+    roll_x, pitch_y, yaw_z = [((v+math.pi) % (2*math.pi)) - math.pi for v in a]
 
     # Fix up orientations for controllers where
     # the model faces backward
@@ -317,10 +306,6 @@ if relative_times:
 else:
     base_time = 0
 
-if sort_times:
-    times, poses = zip(*sorted(zip(times, poses), key=lambda x: x[0]))
-    times_priors, pose_priors = zip(*sorted(zip(times_priors, pose_priors), key=lambda x: x[0]))
-
 for i, o in enumerate(obs):
     try:
         pos, orient = correct_pose(o)
@@ -344,6 +329,10 @@ for i, o in enumerate(obs):
     if len(fb) < 1:
         continue
 
+if sort_times:
+    times, poses = zip(*sorted(zip(times, poses), key=lambda x: x[0]))
+    times_priors, pose_priors = zip(*sorted(zip(times_priors, pose_priors), key=lambda x: x[0]))
+    correct_times, correct_poses = zip(*sorted(zip(correct_times, correct_poses), key=lambda x: x[0]))
 
 print("Corrected times {} poses {}".format(len(correct_poses), len(correct_times)))
 print("Loaded {} pose priors".format(len(pose_priors)))
