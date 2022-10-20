@@ -29,7 +29,7 @@
 /* IMU biases noise levels */
 #define IMU_GYRO_BIAS_NOISE 1e-17 /* gyro bias (rad/s)^2 */
 #define IMU_GYRO_BIAS_NOISE_INITIAL 1e-3 /* gyro bias (rad/s)^2 */
-#define IMU_ACCEL_BIAS_NOISE 1e-12 /* accelerometer bias (m/s^2)^2 */
+#define IMU_ACCEL_BIAS_NOISE 1e-13 /* accelerometer bias (m/s^2)^2 */
 #define IMU_ACCEL_BIAS_NOISE_INITIAL 0.25 /* accelerometer bias (m/s^2)^2 */
 
 #define IMU_VEL_PROCESS_NOISE (1e-3) /* (m/s)^2 */
@@ -72,8 +72,8 @@ const int DELAY_SLOT_COV_SIZE = 6;
 #define DELAY_SLOT_COV_ORIENTATION 0
 #define DELAY_SLOT_COV_POSITION 3
 
-/* Indices into the IMU measurement vector */
-#define IMU_MEAS_ACCEL 0
+/* Indices into the IMU gravity measurement vector */
+#define GRAVITY_MEAS_ACCEL 0
 
 /* Indices into the pose measurement vector */
 #define POSE_MEAS_POSITION 0
@@ -446,7 +446,7 @@ static bool state_sum_func(const unscented_transform *ut, const matrix2d *Y, con
 	return true;
 }
 
-static bool imu_measurement_func(const ukf_base *ukf, const ukf_measurement *m, const matrix2d *X, matrix2d *z)
+static bool gravity_measurement_func(const ukf_base *ukf, const ukf_measurement *m, const matrix2d *X, matrix2d *z)
 {
 	/* Measure accel and correct the orientation, plus biases,
 	 * by measuring a gravity vector rotated by the expected orientation */
@@ -455,18 +455,18 @@ static bool imu_measurement_func(const ukf_base *ukf, const ukf_measurement *m, 
 	                  MATRIX2D_Y(X, STATE_ORIENTATION+2),
 	                  MATRIX2D_Y(X, STATE_ORIENTATION+3) }};
 
-	vec3d global_accel = {{ 0, GRAVITY_MAG, 0 }};
+	vec3d global_accel = {{ 0, 1.0, 0 }};
 	vec3d local_accel;
 
 	/* Move global accel into the IMU body frame, and add bias */
 	oquatd_inverse(&orient);
 	oquatd_get_rotated(&orient, &global_accel, &local_accel);
 
-	MATRIX2D_Y(z, IMU_MEAS_ACCEL)   = local_accel.x + MATRIX2D_Y(X, STATE_ACCEL_BIAS);
-	MATRIX2D_Y(z, IMU_MEAS_ACCEL+1) = local_accel.y + MATRIX2D_Y(X, STATE_ACCEL_BIAS+1);
-	MATRIX2D_Y(z, IMU_MEAS_ACCEL+2) = local_accel.z + MATRIX2D_Y(X, STATE_ACCEL_BIAS+2);
+	MATRIX2D_Y(z, GRAVITY_MEAS_ACCEL)   = local_accel.x;
+	MATRIX2D_Y(z, GRAVITY_MEAS_ACCEL+1) = local_accel.y;
+	MATRIX2D_Y(z, GRAVITY_MEAS_ACCEL+2) = local_accel.z;
 
-	// print_col_vec("IMU measurement prediction (z_bar)", z);
+	// print_col_vec("gravity measurement prediction (z_bar)", z);
 
 	return true;
 }
@@ -652,12 +652,12 @@ void rift_kalman_6dof_init(rift_kalman_6dof_filter *state, posef *init_pose, int
 	for (i = COV_GYRO_BIAS; i < COV_GYRO_BIAS + 3; i++)
 		MATRIX2D_XY(state->ukf.P_prior, i, i) = IMU_GYRO_BIAS_NOISE_INITIAL;
 
-	/* m1 is for IMU measurement - accel */
-	ukf_measurement_init(&state->m1, 3, 3, &state->ukf, imu_measurement_func, NULL, NULL, NULL);
+	/* m1 is for IMU measurement - gravity vector */
+	ukf_measurement_init(&state->m1, 3, 3, &state->ukf, gravity_measurement_func, NULL, NULL, NULL);
 
 	/* FIXME: Set R matrix to something based on IMU noise */
 	for (int i = 0; i < 3; i++)
-	 MATRIX2D_XY(state->m1.R, i, i) = 1e-6;
+	 MATRIX2D_XY(state->m1.R, i, i) = 0.01;
 
 	/* m2 is for pose measurements - position and orientation. We trust the position more than
 	 * the orientation. */
@@ -677,6 +677,7 @@ void rift_kalman_6dof_init(rift_kalman_6dof_filter *state, posef *init_pose, int
 	state->pose_slot = -1;
 
 	ovec3d_set(&state->ang_vel, 0.0, 0.0, 0.0);
+	ovec3d_set(&state->lin_accel, 0.0, 0.0, 0.0);
 }
 
 void rift_kalman_6dof_clear(rift_kalman_6dof_filter *state)
@@ -728,6 +729,7 @@ rift_kalman_6dof_update(rift_kalman_6dof_filter *state, uint64_t time, ukf_measu
 		if (state->first_update) {
 			dt = 0;
 			state->first_update = false;
+			state->first_ts = time;
 		}
 		else {
 			dt = NS_TO_SEC((int64_t)(time - state->current_ts));
@@ -922,20 +924,32 @@ void rift_kalman_6dof_imu_update (rift_kalman_6dof_filter *state, uint64_t time,
 				gyro_bias.x, gyro_bias.y, gyro_bias.z);
 #endif
 		state->quasi_stationary_ts = time;
+		ovec3d_set (&state->quasi_stationary_accel_sum, 0.0, 0.0, 0.0);
+		state->quasi_stationary_accel_n = 0;
+	}
+	else {
+		ovec3d_add (&state->quasi_stationary_accel_sum, &unbiased_accel, &state->quasi_stationary_accel_sum);
+		state->quasi_stationary_accel_n++;
 	}
 
 	/* If it's been quasi stationary for more than 20ms, do a correction */
-	if (time - state->quasi_stationary_ts > 20000000) {
-		/* Put acceleration in the measurement vector to correct the orientation by gravity */
-		/* FIXME: Use mag if set? */
+	if (state->first_update ||
+			(time - state->quasi_stationary_ts >= 20000000 && state->quasi_stationary_accel_n >= 20)) {
+		/* Put normalized acceleration in the measurement vector to correct the orientation by gravity */
 		ukf_measurement *m = &state->m1;
-		MATRIX2D_Y(m->z, IMU_MEAS_ACCEL+0) = accel->x;
-		MATRIX2D_Y(m->z, IMU_MEAS_ACCEL+1) = accel->y;
-		MATRIX2D_Y(m->z, IMU_MEAS_ACCEL+2) = accel->z;
 
-		printf("Device %d TS %f IMU measurement after %f with accel mag %f bias %f %f %f gyro %f bias %f %f %f\n",
-				state->device_id, NS_TO_SEC(time),
+		/* Use the accumulated accelerometer value to average out gravity over the last 20ms */
+		vec3d gravity = state->quasi_stationary_accel_sum;
+		ovec3d_normalize_me(&gravity);
+
+		MATRIX2D_Y(m->z, GRAVITY_MEAS_ACCEL+0) = gravity.x;
+		MATRIX2D_Y(m->z, GRAVITY_MEAS_ACCEL+1) = gravity.y;
+		MATRIX2D_Y(m->z, GRAVITY_MEAS_ACCEL+2) = gravity.z;
+
+		printf("Device %d TS %f (%f) IMU measurement after %f with gravity %f %f %f accel mag %f bias %f %f %f gyro %f bias %f %f %f\n",
+				state->device_id, NS_TO_SEC(time), NS_TO_SEC((int64_t)(time - state->first_ts)),
 				NS_TO_SEC(time - state->last_imu_update_ts),
+				gravity.x, gravity.y, gravity.z,
 				ovec3d_get_length(&unbiased_accel) - GRAVITY_MAG,
 				accel_bias.x, accel_bias.y, accel_bias.z,
 				ovec3d_get_length(&unbiased_gyro),
@@ -946,7 +960,9 @@ void rift_kalman_6dof_imu_update (rift_kalman_6dof_filter *state, uint64_t time,
 		state->last_imu_update_ts = time;
 
 		/* Restart the quasi-stationary timer too */
-		state->quasi_stationary_ts = time;
+		//state->quasi_stationary_ts = time;
+		ovec3d_set (&state->quasi_stationary_accel_sum, 0.0, 0.0, 0.0);
+		state->quasi_stationary_accel_n = 0;
 	} else {
     // Apply the process model, but no measurement
 		rift_kalman_6dof_update(state, time, NULL);
@@ -958,6 +974,16 @@ void rift_kalman_6dof_pose_update(rift_kalman_6dof_filter *state, uint64_t time,
 	/* Use lagged state vector entries to correct for delay */
 	state->pose_slot = delay_slot;
 
+	bool position_only = false;
+
+#if 0
+	/* Do only position updates after 20s */
+	if (!state->first_update && (time - state->first_ts) > 20000000000) {
+		// printf("Device %d Position only ts = %f (%f)\n", state->device_id, NS_TO_SEC(time), NS_TO_SEC((int64_t) (time-state->first_ts)));
+		position_only = true;
+	}
+#endif
+
 	/* If doing a delayed update, then the slot must be in use (
 	 * or else it contains empty data */
 	if (delay_slot != -1) {
@@ -968,21 +994,21 @@ void rift_kalman_6dof_pose_update(rift_kalman_6dof_filter *state, uint64_t time,
 		time = 0;
 	}
 
-#if 0
-	return rift_kalman_6dof_position_update(state, time, &pose->pos, delay_slot);
-#else
-	ukf_measurement *m = &state->m2;
-	MATRIX2D_Y(m->z, POSE_MEAS_POSITION+0) = pose->pos.x;
-	MATRIX2D_Y(m->z, POSE_MEAS_POSITION+1) = pose->pos.y;
-	MATRIX2D_Y(m->z, POSE_MEAS_POSITION+2) = pose->pos.z;
+	if (position_only) {
+		return rift_kalman_6dof_position_update(state, time, &pose->pos, delay_slot);
+	} else {
+		ukf_measurement *m = &state->m2;
+		MATRIX2D_Y(m->z, POSE_MEAS_POSITION+0) = pose->pos.x;
+		MATRIX2D_Y(m->z, POSE_MEAS_POSITION+1) = pose->pos.y;
+		MATRIX2D_Y(m->z, POSE_MEAS_POSITION+2) = pose->pos.z;
 
-	MATRIX2D_Y(m->z, POSE_MEAS_ORIENTATION+0) = pose->orient.x;
-	MATRIX2D_Y(m->z, POSE_MEAS_ORIENTATION+1) = pose->orient.y;
-	MATRIX2D_Y(m->z, POSE_MEAS_ORIENTATION+2) = pose->orient.z;
-	MATRIX2D_Y(m->z, POSE_MEAS_ORIENTATION+3) = pose->orient.w;
+		MATRIX2D_Y(m->z, POSE_MEAS_ORIENTATION+0) = pose->orient.x;
+		MATRIX2D_Y(m->z, POSE_MEAS_ORIENTATION+1) = pose->orient.y;
+		MATRIX2D_Y(m->z, POSE_MEAS_ORIENTATION+2) = pose->orient.z;
+		MATRIX2D_Y(m->z, POSE_MEAS_ORIENTATION+3) = pose->orient.w;
 
-	rift_kalman_6dof_update(state, time, m);
-#endif
+		rift_kalman_6dof_update(state, time, m);
+	}
 }
 
 void rift_kalman_6dof_position_update(rift_kalman_6dof_filter *state, uint64_t time, vec3f *pos, int delay_slot)

@@ -44,6 +44,7 @@ struct rift_kalman_6dof_filter {
 
   /* Current time tracking */
   bool first_update;
+  uint64_t first_ts;
   uint64_t current_ts;
 
   /* Control vectors (gyro and accel reading) */
@@ -75,6 +76,8 @@ struct rift_kalman_6dof_filter {
   bool slot_inuse[MAX_DELAY_SLOTS];
 
   uint64_t quasi_stationary_ts;
+  vec3d quasi_stationary_accel_sum;
+  int quasi_stationary_accel_n;
   uint64_t last_imu_update_ts;
 };
 
