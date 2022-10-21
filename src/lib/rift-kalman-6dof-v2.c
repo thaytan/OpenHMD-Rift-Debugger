@@ -450,10 +450,10 @@ static bool gravity_measurement_func(const ukf_base *ukf, const ukf_measurement 
 {
 	/* Measure accel and correct the orientation, plus biases,
 	 * by measuring a gravity vector rotated by the expected orientation */
-	quatd orient = {{ MATRIX2D_Y(X, STATE_ORIENTATION),
-	                  MATRIX2D_Y(X, STATE_ORIENTATION+1),
-	                  MATRIX2D_Y(X, STATE_ORIENTATION+2),
-	                  MATRIX2D_Y(X, STATE_ORIENTATION+3) }};
+	quatd orient = {{ .x = MATRIX2D_Y(X, STATE_ORIENTATION),
+	                  .y = MATRIX2D_Y(X, STATE_ORIENTATION+1),
+	                  .z = MATRIX2D_Y(X, STATE_ORIENTATION+2),
+	                  .w = MATRIX2D_Y(X, STATE_ORIENTATION+3) }};
 
 	vec3d global_accel = {{ 0, 1.0, 0 }};
 	vec3d local_accel;
@@ -607,6 +607,10 @@ void rift_kalman_6dof_init(rift_kalman_6dof_filter *state, posef *init_pose, int
 
 	state->first_update = true;
 	state->num_delay_slots = num_delay_slots;
+	state->quasi_stationary_ts = 0;
+
+	ovec3d_set (&state->quasi_stationary_accel_sum, 0.0, 0.0, 0.0);
+	state->quasi_stationary_accel_n = 0;
 
 	const int STATE_SIZE = BASE_STATE_SIZE + (num_delay_slots * DELAY_SLOT_STATE_SIZE);
 	const int COV_SIZE = BASE_COV_SIZE + (num_delay_slots * DELAY_SLOT_COV_SIZE);
@@ -655,9 +659,9 @@ void rift_kalman_6dof_init(rift_kalman_6dof_filter *state, posef *init_pose, int
 	/* m1 is for IMU measurement - gravity vector */
 	ukf_measurement_init(&state->m1, 3, 3, &state->ukf, gravity_measurement_func, NULL, NULL, NULL);
 
-	/* FIXME: Set R matrix to something based on IMU noise */
+	/* This R matrix is chosen heuristically to trigger a gradual correction of gravity alignment */
 	for (int i = 0; i < 3; i++)
-	 MATRIX2D_XY(state->m1.R, i, i) = 0.01;
+	 MATRIX2D_XY(state->m1.R, i, i) = 0.001;
 
 	/* m2 is for pose measurements - position and orientation. We trust the position more than
 	 * the orientation. */
@@ -933,27 +937,33 @@ void rift_kalman_6dof_imu_update (rift_kalman_6dof_filter *state, uint64_t time,
 	}
 
 	/* If it's been quasi stationary for more than 20ms, do a correction */
-	if (state->first_update ||
-			(time - state->quasi_stationary_ts >= 20000000 && state->quasi_stationary_accel_n >= 20)) {
+	if (!state->first_update &&
+			(time - state->quasi_stationary_ts >= 20000000 && state->quasi_stationary_accel_n >= 10)) {
 		/* Put normalized acceleration in the measurement vector to correct the orientation by gravity */
 		ukf_measurement *m = &state->m1;
 
 		/* Use the accumulated accelerometer value to average out gravity over the last 20ms */
 		vec3d gravity = state->quasi_stationary_accel_sum;
-		ovec3d_normalize_me(&gravity);
 
-		MATRIX2D_Y(m->z, GRAVITY_MEAS_ACCEL+0) = gravity.x;
-		MATRIX2D_Y(m->z, GRAVITY_MEAS_ACCEL+1) = gravity.y;
-		MATRIX2D_Y(m->z, GRAVITY_MEAS_ACCEL+2) = gravity.z;
-
-		printf("Device %d TS %f (%f) IMU measurement after %f with gravity %f %f %f accel mag %f bias %f %f %f gyro %f bias %f %f %f\n",
+#if 0
+		ovec3d_multiply_scalar(&gravity, 1.0 / state->quasi_stationary_accel_n, &gravity);
+		printf("Device %d TS %f (%f) IMU measurement after %f with gravity mag %f vec %f %f %f accel mag %f bias %f %f %f gyro %f bias %f %f %f\n",
 				state->device_id, NS_TO_SEC(time), NS_TO_SEC((int64_t)(time - state->first_ts)),
 				NS_TO_SEC(time - state->last_imu_update_ts),
+				ovec3d_get_length(&gravity),
 				gravity.x, gravity.y, gravity.z,
 				ovec3d_get_length(&unbiased_accel) - GRAVITY_MAG,
 				accel_bias.x, accel_bias.y, accel_bias.z,
 				ovec3d_get_length(&unbiased_gyro),
 				gyro_bias.x, gyro_bias.y, gyro_bias.z);
+		gravity = state->quasi_stationary_accel_sum;
+#endif
+
+		ovec3d_normalize_me(&gravity);
+
+		MATRIX2D_Y(m->z, GRAVITY_MEAS_ACCEL+0) = gravity.x;
+		MATRIX2D_Y(m->z, GRAVITY_MEAS_ACCEL+1) = gravity.y;
+		MATRIX2D_Y(m->z, GRAVITY_MEAS_ACCEL+2) = gravity.z;
 
 		/* FIXME: Do a measurement only if the device has been stable / quasi-stationary long enough */
 		rift_kalman_6dof_update(state, time, m);
