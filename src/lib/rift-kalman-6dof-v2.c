@@ -669,9 +669,9 @@ void rift_kalman_6dof_init(rift_kalman_6dof_filter *state, posef *init_pose, int
 	for (int i = 0; i < 3; i++)
 		MATRIX2D_XY(state->m2.R, i, i) = 0.01 * 0.01; /* 2cm error std dev */
 
-	MATRIX2D_XY(state->m2.R, 3, 3) = (DEG_TO_RAD(90) * DEG_TO_RAD(90)); /* 90 degrees std dev (don't trust observations much for X/Z, 20 degrees for yaw) */
+	MATRIX2D_XY(state->m2.R, 3, 3) = (DEG_TO_RAD(60) * DEG_TO_RAD(60)); /* degrees std dev (don't trust observations much for X/Z, 20 degrees for yaw) */
 	MATRIX2D_XY(state->m2.R, 4, 4) = (DEG_TO_RAD(20) * DEG_TO_RAD(20)); /* Y */
-	MATRIX2D_XY(state->m2.R, 5, 5) = (DEG_TO_RAD(90) * DEG_TO_RAD(90)); /* Z */
+	MATRIX2D_XY(state->m2.R, 5, 5) = (DEG_TO_RAD(60) * DEG_TO_RAD(60)); /* Z */
 
 	/* m_position is for position-only measurements - no orientation. */
 	ukf_measurement_init(&state->m_position, 3, 3, &state->ukf, position_measurement_func, NULL, NULL, NULL);
