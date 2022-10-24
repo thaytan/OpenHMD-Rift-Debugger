@@ -79,6 +79,9 @@ struct rift_kalman_6dof_filter {
   vec3d quasi_stationary_accel_sum;
   int quasi_stationary_accel_n;
   uint64_t last_imu_update_ts;
+
+  /* Average gravity magnitude */
+  double gravity_mean;
 };
 
 void rift_kalman_6dof_init(rift_kalman_6dof_filter *state, posef *init_pose, int num_delay_slots);
