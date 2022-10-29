@@ -82,6 +82,8 @@ rift_tracked_device_simulator *rift_tracked_device_simulator_new(
 	int device_id, rift_tracked_device_imu_calibration *imu_calibration,
 	posef *imu_pose, posef *model_pose, int num_leds, rift_led *leds);
 
+void rift_tracked_device_simulator_free(rift_tracked_device_simulator *dev);
+
 void rift_tracked_device_simulator_imu_update(rift_tracked_device_simulator *dev,
 	uint64_t local_ts, uint64_t device_ts,
 	const vec3f* ang_vel, const vec3f* accel, const vec3f* mag_field);

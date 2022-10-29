@@ -144,6 +144,8 @@ static void stream_events_free (recording_simulator_stream_events *stream) {
 	if (stream->json_out)
 		fclose (stream->json_out);
 
+	if (stream->device)
+		rift_tracked_device_simulator_free(stream->device);
 	free(stream->s.stream_name);
 	free(stream);
 }

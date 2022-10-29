@@ -53,6 +53,12 @@ rift_tracked_device_simulator *rift_tracked_device_simulator_new(
 	return dev;
 }
 
+void rift_tracked_device_simulator_free(rift_tracked_device_simulator *dev)
+{
+	rift_kalman_6dof_clear(&dev->ukf_fusion);
+	free(dev);
+}
+
 void rift_tracked_device_simulator_imu_update(rift_tracked_device_simulator *dev,
 	uint64_t local_ts, uint64_t device_ts,
 	const vec3f* ang_vel, const vec3f* accel, const vec3f* mag_field)
