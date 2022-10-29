@@ -54,10 +54,10 @@ struct rift_kalman_6dof_filter {
   /* Process noise */
   matrix2d *Q_noise;
 
-  /* Measurment 1: IMU accel
+  /* Measurment 1: Gravity orientation from IMU accel
    *   vec3f accel
    */
-  ukf_measurement m1;
+  ukf_measurement m_gravity;
 
   /* Measurment 2: Pose
    *  vec3f position

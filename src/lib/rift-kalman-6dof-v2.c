@@ -29,10 +29,10 @@
 #define HYBRID_MOTION_THRESHOLD (3 / 1000.0)
 
 /* IMU biases noise levels */
-#define IMU_GYRO_BIAS_NOISE 1e-17 /* gyro bias (rad/s)^2 */
+#define IMU_GYRO_BIAS_NOISE 3e-12 /* gyro bias (rad/s)^2 */
 #define IMU_GYRO_BIAS_NOISE_INITIAL 1e-3 /* gyro bias (rad/s)^2 */
 
-#define IMU_ACCEL_BIAS_NOISE 1e-13 /* accelerometer bias (m/s^2)^2 */
+#define IMU_ACCEL_BIAS_NOISE 3e-7 /* accelerometer bias (m/s^2)^2 */
 #define IMU_ACCEL_BIAS_NOISE_INITIAL 0.25 /* accelerometer bias (m/s^2)^2 */
 
 #if 0
@@ -48,7 +48,7 @@
 #define IMU_GYRO_NOISE  (DEG_TO_RAD(0.158114)) /* MPU6050 250Hz bandwidth noise, in rad/s = 2.7596e-03 */
 #endif
 
-#define POSE_PROCESS_NOISE (1e-5) /* (rad/s)^2 */
+#define POSE_PROCESS_NOISE (1e-6) /* (rad/s)^2 */
 #define IMU_VEL_PROCESS_NOISE (1e-5) /* (m/s)^2 */
 
 /* Velocity damping factor (1.0 = undamped) */
@@ -100,7 +100,7 @@ const int DELAY_SLOT_COV_SIZE = 6;
 #define DELAY_SLOT_COV_POSITION 3
 
 /* Indices into the IMU gravity measurement vector */
-#define GRAVITY_MEAS_ACCEL 0
+#define GRAVITY_MEAS_ORIENT 0
 
 /* Indices into the pose measurement vector */
 #define POSE_MEAS_POSITION 0
@@ -127,9 +127,17 @@ static void print_col_vec(const char *label, uint64_t ts, const matrix2d *mat)
 
 static void delta_quat_from_ang_vel(vec3d *ang_vel, double dt, quatd *delta_q)
 {
-	vec3d half_angle = *ang_vel;
-	ovec3d_multiply_scalar(ang_vel, dt, &half_angle);
-	oquatd_from_rotation(delta_q, &half_angle);
+	double ang_vel_length = ovec3d_get_length (ang_vel);
+	double rot_angle = ang_vel_length * dt;
+
+	if (rot_angle == 0.0) {
+			delta_q->x = delta_q->y = delta_q->z = 0.0;
+			delta_q->w = 1.0;
+			return;
+	}
+
+	vec3d rot_axis = {{ ang_vel->x / ang_vel_length, ang_vel->y / ang_vel_length, ang_vel->z / ang_vel_length }};
+	oquatd_init_axis(delta_q, &rot_axis, rot_angle);
 }
 
 static bool process_func(const ukf_base *ukf, const double dt, const matrix2d *X_prior, matrix2d *X)
@@ -191,6 +199,19 @@ static bool process_func(const ukf_base *ukf, const double dt, const matrix2d *X
 	quatd delta_orient;
 	delta_quat_from_ang_vel(&imu_ang_vel, dt, &delta_orient);
 	oquatd_mult_me(&orient, &delta_orient);
+	oquatd_normalize_me(&orient);
+
+#if 1
+	printf("Device %d dt %f ang vel %f %f %f - bias %f %f %f + noise %f %f %f orient %f %f %f %f delta %f %f %f %f out %f %f %f %f\n",
+		filter_state->device_id, dt,
+		imu_ang_vel.x, imu_ang_vel.y, imu_ang_vel.z,
+		ang_vel_bias.x, ang_vel_bias.y, ang_vel_bias.z,
+		ang_vel_noise.x, ang_vel_noise.y, ang_vel_noise.z,
+		MATRIX2D_Y(X_prior, STATE_ORIENTATION), MATRIX2D_Y(X_prior, STATE_ORIENTATION+1),
+		MATRIX2D_Y(X_prior, STATE_ORIENTATION+2), MATRIX2D_Y(X_prior, STATE_ORIENTATION+3),
+		delta_orient.x, delta_orient.y, delta_orient.z, delta_orient.w,
+		orient.x, orient.y, orient.z, orient.w);
+#endif
 
 	MATRIX2D_Y(X, STATE_ORIENTATION) = orient.x;
 	MATRIX2D_Y(X, STATE_ORIENTATION+1) = orient.y;
@@ -460,6 +481,7 @@ static void calc_quat_sum(const matrix2d *Y, int state_index, const matrix2d *ad
 
 	oquatd_from_rotation(&delta_q, &delta_rot);
 	oquatd_mult_me(&out_q, &delta_q);
+	oquatd_normalize_me(&out_q);
 
 	MATRIX2D_Y(X, state_index) = out_q.x;
 	MATRIX2D_Y(X, state_index+1) = out_q.y;
@@ -506,23 +528,27 @@ static bool state_sum_func(const unscented_transform *ut, const matrix2d *Y, con
 
 static bool gravity_measurement_func(const ukf_base *ukf, const ukf_measurement *m, const matrix2d *X, matrix2d *z)
 {
-	/* Measure accel and correct the orientation, plus biases,
-	 * by measuring a gravity vector rotated by the expected orientation */
-	quatd orient = {{ .x = MATRIX2D_Y(X, STATE_ORIENTATION),
-	                  .y = MATRIX2D_Y(X, STATE_ORIENTATION+1),
-	                  .z = MATRIX2D_Y(X, STATE_ORIENTATION+2),
-	                  .w = MATRIX2D_Y(X, STATE_ORIENTATION+3) }};
+	/* Extract the orientation due to gravity by decomposing the swing around the gravity direction */
+	quatd orient = (quatd) {{
+	    .x = MATRIX2D_Y(X, STATE_ORIENTATION),
+	    .y = MATRIX2D_Y(X, STATE_ORIENTATION+1),
+	    .z = MATRIX2D_Y(X, STATE_ORIENTATION+2),
+	    .w = MATRIX2D_Y(X, STATE_ORIENTATION+3)
+		}};
 
-	vec3d global_accel = {{ 0, 1.0, 0 }};
-	vec3d local_accel;
+	const vec3d gravity_vector = {{ 0.0, 1.0, 0.0 }};
+	quatd pose_gravity_swing, pose_gravity_twist;
 
-	/* Calculate the gravity vector in local acceleration */
-	oquatd_inverse(&orient);
-	oquatd_get_rotated(&orient, &global_accel, &local_accel);
+	oquatd_decompose_swing_twist(&orient, &gravity_vector, &pose_gravity_swing, &pose_gravity_twist);
 
-	MATRIX2D_Y(z, GRAVITY_MEAS_ACCEL)   = local_accel.x;
-	MATRIX2D_Y(z, GRAVITY_MEAS_ACCEL+1) = local_accel.y;
-	MATRIX2D_Y(z, GRAVITY_MEAS_ACCEL+2) = local_accel.z;
+	MATRIX2D_Y(z, GRAVITY_MEAS_ORIENT)   = pose_gravity_swing.x;
+	MATRIX2D_Y(z, GRAVITY_MEAS_ORIENT+1) = pose_gravity_swing.y;
+	MATRIX2D_Y(z, GRAVITY_MEAS_ORIENT+2) = pose_gravity_swing.z;
+	MATRIX2D_Y(z, GRAVITY_MEAS_ORIENT+3) = pose_gravity_swing.w;
+
+	printf ("orient %f %f %f %f swing %f %f %f %f\n",
+		orient.x, orient.y, orient.z, orient.w,
+		pose_gravity_swing.x, pose_gravity_swing.y, pose_gravity_swing.z, pose_gravity_swing.w);
 
 #if 0
 	rift_kalman_6dof_filter *state = (rift_kalman_6dof_filter *)(ukf);
@@ -534,36 +560,63 @@ static bool gravity_measurement_func(const ukf_base *ukf, const ukf_measurement 
 
 static bool gravity_mean_func(const unscented_transform *ut, const matrix2d *sigmas, const matrix2d *weights, matrix2d *mean)
 {
-	if (matrix2d_multiply (mean, sigmas, weights) != MATRIX_RESULT_OK) {
+	if (!calc_quat_mean(sigmas, GRAVITY_MEAS_ORIENT, weights, mean))
 		return false;
-	}
-
-	vec3d local_accel;
-	local_accel.x = MATRIX2D_Y(mean, GRAVITY_MEAS_ACCEL);
-	local_accel.y = MATRIX2D_Y(mean, GRAVITY_MEAS_ACCEL+1);
-	local_accel.z = MATRIX2D_Y(mean, GRAVITY_MEAS_ACCEL+2);
-	ovec3d_normalize_me(&local_accel);
-	MATRIX2D_Y(mean, GRAVITY_MEAS_ACCEL)   = local_accel.x;
-	MATRIX2D_Y(mean, GRAVITY_MEAS_ACCEL+1) = local_accel.y;
-	MATRIX2D_Y(mean, GRAVITY_MEAS_ACCEL+2) = local_accel.z;
 
 	return true;
 }
 
-/* The addend here is a 3 value gravity vector that needs to be kept normalised */
+/* Do a non-linear addition of quaternion */
 static bool gravity_sum_func(const unscented_transform *ut, const matrix2d *Y, const matrix2d *addend, matrix2d *X)
 {
-	vec3d local_accel;
+	quatd out_q, delta_q;
+	vec3d delta_rot;
 
-	local_accel.x = MATRIX2D_Y(Y, GRAVITY_MEAS_ACCEL) + MATRIX2D_Y(addend, GRAVITY_MEAS_ACCEL);
-	local_accel.y = MATRIX2D_Y(Y, GRAVITY_MEAS_ACCEL+1) + MATRIX2D_Y(addend, GRAVITY_MEAS_ACCEL+1);
-	local_accel.z = MATRIX2D_Y(Y, GRAVITY_MEAS_ACCEL+2) + MATRIX2D_Y(addend, GRAVITY_MEAS_ACCEL+2);
+	/* Quaternion component */
+	out_q.x = MATRIX2D_Y(Y, GRAVITY_MEAS_ORIENT);
+	out_q.y = MATRIX2D_Y(Y, GRAVITY_MEAS_ORIENT+1);
+	out_q.z = MATRIX2D_Y(Y, GRAVITY_MEAS_ORIENT+2);
+	out_q.w = MATRIX2D_Y(Y, GRAVITY_MEAS_ORIENT+3);
 
-	ovec3d_normalize_me(&local_accel);
+	delta_rot.x = MATRIX2D_Y(addend, 0);
+	delta_rot.y = MATRIX2D_Y(addend, 1);
+	delta_rot.z = MATRIX2D_Y(addend, 2);
 
-	MATRIX2D_Y(X, GRAVITY_MEAS_ACCEL)   = local_accel.x;
-	MATRIX2D_Y(X, GRAVITY_MEAS_ACCEL+1) = local_accel.y;
-	MATRIX2D_Y(X, GRAVITY_MEAS_ACCEL+2) = local_accel.z;
+	oquatd_from_rotation(&delta_q, &delta_rot);
+	oquatd_mult_me(&out_q, &delta_q);
+
+	MATRIX2D_Y(X, GRAVITY_MEAS_ORIENT) = out_q.x;
+	MATRIX2D_Y(X, GRAVITY_MEAS_ORIENT+1) = out_q.y;
+	MATRIX2D_Y(X, GRAVITY_MEAS_ORIENT+2) = out_q.z;
+	MATRIX2D_Y(X, GRAVITY_MEAS_ORIENT+3) = out_q.w;
+
+	return true;
+}
+
+static bool gravity_residual_func(const unscented_transform *ut, const matrix2d *X, const matrix2d *Y, matrix2d *residual)
+{
+	quatd X_q, Y_q, delta_q;
+	vec3d delta_rot;
+
+	/* Quaternion component */
+	X_q.x = MATRIX2D_Y(X, GRAVITY_MEAS_ORIENT);
+	X_q.y = MATRIX2D_Y(X, GRAVITY_MEAS_ORIENT+1);
+	X_q.z = MATRIX2D_Y(X, GRAVITY_MEAS_ORIENT+2);
+	X_q.w = MATRIX2D_Y(X, GRAVITY_MEAS_ORIENT+3);
+
+	Y_q.x = MATRIX2D_Y(Y, GRAVITY_MEAS_ORIENT);
+	Y_q.y = MATRIX2D_Y(Y, GRAVITY_MEAS_ORIENT+1);
+	Y_q.z = MATRIX2D_Y(Y, GRAVITY_MEAS_ORIENT+2);
+	Y_q.w = MATRIX2D_Y(Y, GRAVITY_MEAS_ORIENT+3);
+
+	oquatd_diff(&Y_q, &X_q, &delta_q);
+	oquatd_normalize_me(&delta_q);
+	oquatd_to_rotation(&delta_q, &delta_rot);
+
+	MATRIX2D_Y(residual, 0) = delta_rot.x;
+	MATRIX2D_Y(residual, 1) = delta_rot.y;
+	MATRIX2D_Y(residual, 2) = delta_rot.z;
+
 	return true;
 }
 
@@ -740,12 +793,12 @@ void rift_kalman_6dof_init(rift_kalman_6dof_filter *state, posef *init_pose, int
 	for (i = COV_GYRO_BIAS; i < COV_GYRO_BIAS + 3; i++)
 		MATRIX2D_XY(state->ukf.P_prior, i, i) = IMU_GYRO_BIAS_NOISE_INITIAL;
 
-	/* m1 is for IMU measurement - gravity vector */
-	ukf_measurement_init(&state->m1, 3, 3, &state->ukf, gravity_measurement_func, gravity_mean_func, NULL, gravity_sum_func);
+	/* IMU measurement - gravity vector from accel */
+	ukf_measurement_init(&state->m_gravity, 4, 3, &state->ukf, gravity_measurement_func, gravity_mean_func, gravity_residual_func, gravity_sum_func);
 
 	/* This R matrix is chosen heuristically to trigger a gradual correction of gravity alignment */
 	for (int i = 0; i < 3; i++)
-	 MATRIX2D_XY(state->m1.R, i, i) = 0.0025;
+	 MATRIX2D_XY(state->m_gravity.R, i, i) = 0.0025;
 
 	/* m2 is for pose measurements - position and orientation. We trust the position more than
 	 * the orientation. */
@@ -771,7 +824,8 @@ void rift_kalman_6dof_init(rift_kalman_6dof_filter *state, posef *init_pose, int
 void rift_kalman_6dof_clear(rift_kalman_6dof_filter *state)
 {
 	ukf_measurement_clear(&state->m2);
-	ukf_measurement_clear(&state->m1);
+	ukf_measurement_clear(&state->m_gravity);
+	ukf_measurement_clear(&state->m_position);
 	ukf_base_clear(&state->ukf);
 }
 
@@ -816,6 +870,8 @@ static void reset_noise_entry(rift_kalman_6dof_filter *state, matrix2d *X, matri
 	matrix_result ret;
 	matrix2d tmp;
 
+	/* Zero out the co-variance column and row entries, then
+	 * set the variances on the diagonal, then clear the mean back to 0.0 */
 	ret = matrix2d_submatrix_ref(P, cov_index, 0, 3, P->cols, &tmp);
 	assert (ret ==	MATRIX_RESULT_OK);
 	ret = matrix2d_fill(&tmp, 0.0);
@@ -836,11 +892,11 @@ static void reset_noise_entry(rift_kalman_6dof_filter *state, matrix2d *X, matri
 static void reset_noise(rift_kalman_6dof_filter *state, matrix2d *X, matrix2d *P)
 {
 	/* Reset the augmented control vector covariance noise entries */
-	reset_noise_entry(state, X, P, STATE_ACCEL_BIAS_NOISE, COV_ACCEL_BIAS_NOISE, IMU_ACCEL_BIAS_NOISE);
-	reset_noise_entry(state, X, P, STATE_GYRO_BIAS_NOISE, COV_GYRO_BIAS_NOISE, IMU_GYRO_BIAS_NOISE);
+	reset_noise_entry(state, X, P, STATE_ACCEL_BIAS_NOISE, COV_ACCEL_BIAS_NOISE, IMU_ACCEL_BIAS_NOISE*IMU_ACCEL_BIAS_NOISE);
+	reset_noise_entry(state, X, P, STATE_GYRO_BIAS_NOISE, COV_GYRO_BIAS_NOISE, IMU_GYRO_BIAS_NOISE*IMU_GYRO_BIAS_NOISE);
 
-	reset_noise_entry(state, X, P, STATE_ACCEL_NOISE, COV_ACCEL_NOISE, IMU_ACCEL_NOISE);
-	reset_noise_entry(state, X, P, STATE_GYRO_NOISE, COV_GYRO_NOISE, IMU_GYRO_NOISE);
+	reset_noise_entry(state, X, P, STATE_ACCEL_NOISE, COV_ACCEL_NOISE, IMU_ACCEL_NOISE*IMU_ACCEL_NOISE);
+	reset_noise_entry(state, X, P, STATE_GYRO_NOISE, COV_GYRO_NOISE, IMU_GYRO_NOISE*IMU_GYRO_NOISE);
 }
 
 static void
@@ -866,18 +922,19 @@ rift_kalman_6dof_update(rift_kalman_6dof_filter *state, uint64_t time, ukf_measu
 		state->current_ts = time;
 	}
 
-	update_Q(state, dt);
 	reset_noise(state, state->ukf.x_prior, state->ukf.P_prior);
-
+	update_Q(state, dt);
+	printf("======== Device %d BEGIN delay_slot %d dt %f ==========\n", state->device_id, state->pose_slot, dt);
 	if (!ukf_base_predict(&state->ukf, dt)) {
-			LOGE ("Failed to compute UKF prediction at time %llu (dt %f)", (unsigned long long) state->current_ts, dt);
-			return;
+		LOGE ("Failed to compute UKF prediction at time %llu (dt %f)", (unsigned long long) state->current_ts, dt);
+		return;
 	}
+	printf("======== Device %d END predict ==========\n", state->device_id);
 
 	if (m) {
 		if (!ukf_base_update(&state->ukf, m)) {
 			LOGE ("Failed to perform %s UKF update at time %llu (dt %f)",
-						m == &state->m1 ? "IMU" : "Pose", (unsigned long long) state->current_ts, dt);
+						m == &state->m_gravity ? "IMU" : "Pose", (unsigned long long) state->current_ts, dt);
 			return;
 		}
 	}
@@ -889,6 +946,7 @@ rift_kalman_6dof_update(rift_kalman_6dof_filter *state, uint64_t time, ukf_measu
 			return;
 		}
 	}
+	printf("======== Device %d END update ==========\n", state->device_id);
 
 	// print_col_vec ("UKF Mean after update", state->current_ts, state->ukf.x_prior);
 }
@@ -1012,6 +1070,48 @@ void rift_kalman_6dof_release_delay_slot(rift_kalman_6dof_filter *state, int del
 	state->slot_inuse[delay_slot] = false;
 }
 
+static bool orient_quat_from_gravity(quatd *orient, const vec3d *accel)
+{
+	// Calculate a cross product between what the device
+	// thinks is up and what gravity indicates is down.
+	// The values are optimized of what we would get out
+	// from the cross product.
+	const vec3d up = {{0, 1.0, 0}};
+
+	vec3d gravity_vec = *accel;
+	vec3d tilt_axis = {{accel->z, 0, -accel->x}};
+
+	/* Check if we're already closely aligned to gravity */
+	float tilt_angle = ovec3d_get_angle(&up, &gravity_vec);
+	if (tilt_angle < 0.002)
+		return false;
+
+	ovec3d_normalize_me(&tilt_axis);
+	ovec3d_normalize_me(&gravity_vec);
+
+	oquatd_init_axis(orient, &tilt_axis, tilt_angle);
+	return true;
+}
+
+static double
+oquatd_get_angle(const quatd *q1, const quatd *q2)
+{
+	quatd diff;
+
+	oquatd_diff(q1, q2, &diff);
+	return 2 * acos(diff.w);
+}
+
+static float
+oquatf_get_angle(const quatf *q1, const quatf *q2)
+{
+	quatf diff;
+
+	oquatf_diff(q1, q2, &diff);
+	return 2 * acos(diff.w);
+}
+
+
 void rift_kalman_6dof_imu_update (rift_kalman_6dof_filter *state, uint64_t time, const vec3f* ang_vel, const vec3f* accel, const vec3f* mag_field)
 {
 	/* Put angular velocity and accel into the input vector */
@@ -1028,6 +1128,20 @@ void rift_kalman_6dof_imu_update (rift_kalman_6dof_filter *state, uint64_t time,
 		//ovec3d_multiply_scalar(&state->ang_vel, 1.024, &state->ang_vel);
 		ovec3d_multiply_scalar(&state->lin_accel, 1.024, &state->lin_accel);
 	}
+
+#if 1
+	quatd orient_prior = {{ .x = MATRIX2D_Y(state->ukf.x_prior, STATE_ORIENTATION),
+		                  .y = MATRIX2D_Y(state->ukf.x_prior, STATE_ORIENTATION+1),
+		                  .z = MATRIX2D_Y(state->ukf.x_prior, STATE_ORIENTATION+2),
+		                  .w = MATRIX2D_Y(state->ukf.x_prior, STATE_ORIENTATION+3) }};
+	vec3d global_accel = {{ 0, 1.0, 0 }};
+	vec3d gravity_prior;
+
+	/* Move global accel into the IMU body frame */
+	oquatd_inverse(&orient_prior);
+	oquatd_get_rotated(&orient_prior, &global_accel, &gravity_prior);
+	ovec3d_multiply_scalar(&gravity_prior, state->gravity_mean, &gravity_prior);
+#endif
 
 	vec3d unbiased_gyro, gyro_bias;
 
@@ -1070,38 +1184,27 @@ void rift_kalman_6dof_imu_update (rift_kalman_6dof_filter *state, uint64_t time,
 	}
 
 	/* If it's been quasi stationary for more than 20ms, do a correction every 10 samples, averaging them */
+	quatd imu_gravity_orient;
+
 	if (!state->first_update &&
-			(time - state->quasi_stationary_ts >= 20000000 && state->quasi_stationary_accel_n >= 10)) {
-		/* Put normalized acceleration in the measurement vector to correct the orientation by gravity */
-		ukf_measurement *m = &state->m1;
+			(time - state->quasi_stationary_ts >= 20000000 && state->quasi_stationary_accel_n >= 10) &&
+			orient_quat_from_gravity(&imu_gravity_orient, &state->quasi_stationary_accel_sum)) {
 
 		/* Use the accumulated accelerometer value to average out gravity over the last 10 samples */
-		vec3d gravity = state->quasi_stationary_accel_sum;
+		vec3d imu_gravity = state->quasi_stationary_accel_sum;
 
 		/* Update the mean gravity */
-		ovec3d_multiply_scalar(&gravity, 1.0 / state->quasi_stationary_accel_n, &gravity);
-		printf("gravity_mean %f + %f\n", state->gravity_mean, ovec3d_get_length(&gravity));
-		state->gravity_mean = 0.999 * state->gravity_mean + 0.001 * ovec3d_get_length (&gravity);
+		ovec3d_multiply_scalar(&imu_gravity, 1.0 / state->quasi_stationary_accel_n, &imu_gravity);
+		printf("gravity_mean %f + %f\n", state->gravity_mean, ovec3d_get_length(&imu_gravity));
+		state->gravity_mean = 0.999 * state->gravity_mean + 0.001 * ovec3d_get_length (&imu_gravity);
 
 #if 1
-		quatd orient_prior = {{ .x = MATRIX2D_Y(state->ukf.x_prior, STATE_ORIENTATION),
-		                  .y = MATRIX2D_Y(state->ukf.x_prior, STATE_ORIENTATION+1),
-		                  .z = MATRIX2D_Y(state->ukf.x_prior, STATE_ORIENTATION+2),
-		                  .w = MATRIX2D_Y(state->ukf.x_prior, STATE_ORIENTATION+3) }};
-		vec3d global_accel = {{ 0, 1.0, 0 }};
-		vec3d gravity_prior;
-
-		/* Move global accel into the IMU body frame */
-		oquatd_inverse(&orient_prior);
-		oquatd_get_rotated(&orient_prior, &global_accel, &gravity_prior);
-		ovec3d_multiply_scalar(&gravity_prior, state->gravity_mean, &gravity_prior);
-
 		printf("Device %d TS %f (%f) IMU measurement after %f with gravity mean %f mag %f vec %f %f %f "
 				"accel mag %f bias %f %f %f gyro %f bias %f %f %f gravity prior %f %f %f orient cov %f %f %f\n",
 				state->device_id, NS_TO_SEC(time), NS_TO_SEC((int64_t)(time - state->first_ts)),
 				NS_TO_SEC(time - state->last_imu_update_ts),
-				state->gravity_mean, ovec3d_get_length(&gravity),
-				gravity.x, gravity.y, gravity.z,
+				state->gravity_mean, ovec3d_get_length(&imu_gravity),
+				imu_gravity.x, imu_gravity.y, imu_gravity.z,
 				ovec3d_get_length(&unbiased_accel) - state->gravity_mean,
 				accel_bias.x, accel_bias.y, accel_bias.z,
 				ovec3d_get_length(&unbiased_gyro),
@@ -1110,13 +1213,18 @@ void rift_kalman_6dof_imu_update (rift_kalman_6dof_filter *state, uint64_t time,
 				MATRIX2D_XY(state->ukf.P_prior, COV_ORIENTATION, COV_ORIENTATION),
 				MATRIX2D_XY(state->ukf.P_prior, COV_ORIENTATION+1, COV_ORIENTATION+1),
 				MATRIX2D_XY(state->ukf.P_prior, COV_ORIENTATION+2, COV_ORIENTATION+2));
-		gravity = state->quasi_stationary_accel_sum;
+
+		imu_gravity = state->quasi_stationary_accel_sum;
 #endif
 
-		ovec3d_normalize_me(&gravity);
-		MATRIX2D_Y(m->z, GRAVITY_MEAS_ACCEL+0) = gravity.x;
-		MATRIX2D_Y(m->z, GRAVITY_MEAS_ACCEL+1) = gravity.y;
-		MATRIX2D_Y(m->z, GRAVITY_MEAS_ACCEL+2) = gravity.z;
+		/* Put normalized acceleration in the measurement vector to correct the orientation by gravity */
+		ukf_measurement *m = &state->m_gravity;
+
+		ovec3d_normalize_me(&imu_gravity);
+		MATRIX2D_Y(m->z, GRAVITY_MEAS_ORIENT+0) = imu_gravity_orient.x;
+		MATRIX2D_Y(m->z, GRAVITY_MEAS_ORIENT+1) = imu_gravity_orient.y;
+		MATRIX2D_Y(m->z, GRAVITY_MEAS_ORIENT+2) = imu_gravity_orient.z;
+		MATRIX2D_Y(m->z, GRAVITY_MEAS_ORIENT+3) = imu_gravity_orient.w;
 
 		/* FIXME: Do a measurement only if the device has been stable / quasi-stationary long enough */
 		rift_kalman_6dof_update(state, time, m);
@@ -1127,28 +1235,47 @@ void rift_kalman_6dof_imu_update (rift_kalman_6dof_filter *state, uint64_t time,
 		ovec3d_set (&state->quasi_stationary_accel_sum, 0.0, 0.0, 0.0);
 		state->quasi_stationary_accel_n = 0;
 
+	} else {
 #if 1
-		quatd orient = {{ .x = MATRIX2D_Y(state->ukf.x_prior, STATE_ORIENTATION),
+		orient_quat_from_gravity(&imu_gravity_orient, &unbiased_accel);
+#endif
+		// Apply the process model, but no measurement
+		rift_kalman_6dof_update(state, time, NULL);
+	}
+
+#if 1
+		quatd orient_post = {{ .x = MATRIX2D_Y(state->ukf.x_prior, STATE_ORIENTATION),
 		                  .y = MATRIX2D_Y(state->ukf.x_prior, STATE_ORIENTATION+1),
 		                  .z = MATRIX2D_Y(state->ukf.x_prior, STATE_ORIENTATION+2),
 		                  .w = MATRIX2D_Y(state->ukf.x_prior, STATE_ORIENTATION+3) }};
 		//vec3d global_accel = {{ 0, 1.0, 0 }};
 
 		/* Move global accel into the IMU body frame */
-		oquatd_inverse(&orient);
-		oquatd_get_rotated(&orient, &global_accel, &gravity);
-		ovec3d_multiply_scalar(&gravity, state->gravity_mean, &gravity);
+		vec3d new_gravity;
+		oquatd_inverse(&orient_post);
+		oquatd_get_rotated(&orient_post, &global_accel, &new_gravity);
+		ovec3d_multiply_scalar(&new_gravity, state->gravity_mean, &new_gravity);
+
+		//orient_quat_from_gravity(&orient_prior, &gravity_prior);
+		//orient_quat_from_gravity(&orient_post, &new_gravity);
+
 		printf("Device %d TS %f (%f) post IMU measurement f vec %f %f %f cov %f %f %f\n",
 				state->device_id, NS_TO_SEC(time), NS_TO_SEC((int64_t)(time - state->first_ts)),
-				gravity.x, gravity.y, gravity.z,
+				new_gravity.x, new_gravity.y, new_gravity.z,
 				MATRIX2D_XY(state->ukf.P_prior, COV_ORIENTATION, COV_ORIENTATION),
 				MATRIX2D_XY(state->ukf.P_prior, COV_ORIENTATION+1, COV_ORIENTATION+1),
 				MATRIX2D_XY(state->ukf.P_prior, COV_ORIENTATION+2, COV_ORIENTATION+2));
+
+		printf("Device %d TS %f (%f) IMU ang_vel %f %f %f accel %f %f %f orient %f %f %f %f prior %f %f %f %f error %f post %f %f %f %f error %f\n",
+				state->device_id, NS_TO_SEC(time), NS_TO_SEC((int64_t)(time - state->first_ts)),
+				unbiased_gyro.x, unbiased_gyro.y, unbiased_gyro.z,
+				unbiased_accel.x, unbiased_accel.y, unbiased_accel.z,
+				imu_gravity_orient.x, imu_gravity_orient.y, imu_gravity_orient.z, imu_gravity_orient.w,
+				orient_prior.x, orient_prior.y, orient_prior.z, orient_prior.w,
+				oquatd_get_angle(&orient_prior, &imu_gravity_orient),
+				orient_post.x, orient_post.y, orient_post.z, orient_post.w,
+				oquatd_get_angle(&orient_post, &imu_gravity_orient));
 #endif
-	} else {
-    // Apply the process model, but no measurement
-		rift_kalman_6dof_update(state, time, NULL);
-	}
 }
 
 void rift_kalman_6dof_pose_update(rift_kalman_6dof_filter *state, uint64_t time, posef *pose, int delay_slot)
@@ -1170,6 +1297,17 @@ void rift_kalman_6dof_pose_update(rift_kalman_6dof_filter *state, uint64_t time,
 		pose_updates++;
 	}
 #endif
+
+	posef prior_pose;
+  rift_kalman_6dof_get_delay_slot_pose_at(state, time, delay_slot, &prior_pose, NULL, NULL, NULL, NULL, NULL);
+	printf("Device %d TS %f rel %f dt %f Pose update delay slot %d pos %f %f %f orient %f %f %f %f (prior %f %f %f orient %f %f %f %f error %f)\n",
+			state->device_id, NS_TO_SEC(time), NS_TO_SEC((int64_t)(time - state->first_ts)),
+			NS_TO_SEC((int64_t)(time - state->current_ts)), delay_slot, 
+			pose->pos.x, pose->pos.y, pose->pos.z,
+			pose->orient.x, pose->orient.y, pose->orient.z, pose->orient.w,
+			prior_pose.pos.x, prior_pose.pos.y, prior_pose.pos.z,
+			prior_pose.orient.x, prior_pose.orient.y, prior_pose.orient.z, prior_pose.orient.w,
+			oquatf_get_angle(&prior_pose.orient, &pose->orient));
 
 	/* If doing a delayed update, then the slot must be in use (
 	 * or else it contains empty data */
@@ -1204,6 +1342,15 @@ void rift_kalman_6dof_position_update(rift_kalman_6dof_filter *state, uint64_t t
 
 	/* Use lagged state vector entries to correct for delay */
 	state->pose_slot = delay_slot;
+
+	posef prior_pose;
+  rift_kalman_6dof_get_delay_slot_pose_at(state, time, delay_slot, &prior_pose, NULL, NULL, NULL, NULL, NULL);
+	printf("Device %d TS %f rel %f dt %f Position update delay slot %d pos %f %f %f (prior %f %f %f orient %f %f %f %f)\n",
+			state->device_id, NS_TO_SEC(time), NS_TO_SEC((int64_t)(time - state->first_ts)),
+			NS_TO_SEC((int64_t)(time - state->current_ts)), delay_slot, 
+			pos->x, pos->y, pos->z,
+			prior_pose.pos.x, prior_pose.pos.y, prior_pose.pos.z,
+			prior_pose.orient.x, prior_pose.orient.y, prior_pose.orient.z, prior_pose.orient.w);
 
 	/* If doing a delayed update, then the slot must be in use (
 	 * or else it contains empty data */
