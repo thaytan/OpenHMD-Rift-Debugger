@@ -49,13 +49,10 @@ def correct_pose(o):
 
     # Rotate corrected pose 180°
     if device_id == 0:
-        print("Rotating quat",q)
         try:
             q = quaternion.from_rotation_matrix(quaternion.as_rotation_matrix(q) @ quaternion.as_rotation_matrix(np.quaternion(0.0, 0.0, 1.0, 0.0)))
         except Exception as e:
             print(e)
-
-        print("Rotated quat",q)
 
     return t, (q.x, q.y, q.z, q.w)
 
@@ -297,7 +294,7 @@ print("Loaded {} JSON pose events".format(len(poses)))
 if len(poses) < 1:
     sys.exit(0)
 
-base_time = times[0]
+base_time = min(times[0], times_priors[0])
 print("Base time: {}".format(base_time))
 
 if relative_times:

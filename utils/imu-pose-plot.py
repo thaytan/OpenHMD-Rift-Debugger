@@ -78,11 +78,11 @@ print("Average velocity: {}".format(vel_averages))
 print("Average acceleration: {}".format(accel_averages))
 print("Maximum jerk (m/s^3): {}".format(max_jerk))
 
-num_cols = 4
+num_cols = 5
 
 fig, axs = plt.subplots(3, num_cols, sharex=True)
 
-axis_names = ['Roll', 'Pitch', 'Yaw', 'X', 'Y', 'Z', 'vel X', 'vel Y', 'vel Z', 'accel X', 'accel Y', 'accel Z' ]
+axis_names = ['Roll', 'Pitch', 'Yaw', 'X', 'Y', 'Z', 'vel X', 'vel Y', 'vel Z', 'accel X', 'accel Y', 'accel Z', 'ang vel X', 'ang vel Y', 'ang vel Z' ]
 
 for col in range(num_cols):
     obs_poses = None
@@ -101,10 +101,14 @@ for col in range(num_cols):
         priors = list(map(lambda e: e['lin-vel-before'], events_imu))
         posteriors = list(map(lambda e: e['lin-vel-after'], events_imu))
         obs_outputs = list(map(lambda e: e['lin-vel'], events_outputs))
-    else:
+    elif col == 3:
         priors = list(map(lambda e: e['lin-accel-before'], events_imu))
         posteriors = list(map(lambda e: e['lin-accel-after'], events_imu))
         obs_outputs = list(map(lambda e: e['lin-accel'], events_outputs))
+    else:
+        priors = list(map(lambda e: e['ang_vel'], events_imu))
+        posteriors = list(map(lambda e: e['ang_vel'], events_imu))
+        obs_outputs = list(map(lambda e: e['ang-vel'], events_outputs))
 
     for i in range(3):
         axs[i][col].plot(t_outputs, list(map(lambda p: p[i], obs_outputs)), '*-m', label='Output poses')
