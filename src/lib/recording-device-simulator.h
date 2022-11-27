@@ -32,6 +32,7 @@ struct rift_tracker_pose_delay_slot {
 	bool valid;			/* true if the exposure info was set */
 	int use_count;	/* Number of frames using this slot */
 
+	uint64_t exposure_ts_ns; /* Exposure timestamp for this slot */
 	uint64_t device_time_ns; /* Device time this slot is currently tracking */
 
 	/* rift_tracked_device_model_pose_update stores the observed poses here */
@@ -91,13 +92,17 @@ void rift_tracked_device_simulator_imu_update(rift_tracked_device_simulator *dev
 void rift_tracked_device_simulator_model_pose_update(rift_tracked_device_simulator *dev,
 	uint64_t local_ts, uint64_t device_ts, uint64_t frame_start_local_ts, int delay_slot,
   uint32_t score_flags, bool update_position, bool update_orientation,
-	posef *model_pose, const char *source);
+	posef *model_pose, vec3f *model_obs_pos_error, const char *source);
 
 void rift_tracked_device_simulator_get_model_pose(rift_tracked_device_simulator *dev, uint64_t local_ts,
 		posef *pose, vec3f *vel, vec3f *accel, vec3f *ang_vel);
 
 void rift_tracked_device_simulator_on_exposure (rift_tracked_device_simulator *dev, uint64_t local_ts,
 	uint64_t device_ts, uint64_t exposure_ts, int delay_slot);
+
+void rift_tracked_device_simulator_get_exposure_info (rift_tracked_device_simulator *dev, int delay_slot,
+	rift_tracked_device_exposure_info *dev_info);
+
 void rift_tracked_device_simulator_frame_captured (rift_tracked_device_simulator *dev, uint64_t local_ts,
 	uint64_t frame_start_local_ts, int delay_slot, const char *source);
 void rift_tracked_device_simulator_frame_release (rift_tracked_device_simulator *dev, uint64_t local_ts,

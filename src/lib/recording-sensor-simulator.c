@@ -33,11 +33,30 @@ recording_simulator_sensor_new(char *serial_no, rift_sensor_camera_params *calib
 	sensor->bw = blobwatch_new(calibration->is_cv1 ? BLOB_THRESHOLD_CV1 : BLOB_THRESHOLD_DK2);
 	rift_pose_finder_init(&sensor->pf, calibration, (rift_pose_finder_cb) handle_found_pose, sensor);
 
+	if (pose)
+		recording_simulator_sensor_set_pose(sensor, pose);
+
 	return sensor;
 }
 
 void
-recording_simulator_sensor_process_frame(recording_simulator_sensor *sensor, ohmd_video_frame *frame)
+recording_simulator_sensor_set_pose(recording_simulator_sensor *sensor, posef *camera_pose)
+{
+	const vec3f gravity_vector = {{ 0.0, 1.0, 0.0 }};
+
+	sensor->pf.camera_pose = *camera_pose;
+	sensor->pf.have_camera_pose = true;
+	sensor->pf.camera_pose_changed = false;
+
+	quatf cam_orient = camera_pose->orient;
+
+	oquatf_inverse(&cam_orient);
+	oquatf_get_rotated(&cam_orient, &gravity_vector, &sensor->pf.cam_gravity_vector);
+}
+
+void
+recording_simulator_sensor_process_frame(recording_simulator_sensor *sensor,
+		ohmd_video_frame *frame, rift_tracker_exposure_info *exp_info)
 {
 	blobservation* bwobs = NULL;
 

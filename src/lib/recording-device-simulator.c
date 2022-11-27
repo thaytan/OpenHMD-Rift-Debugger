@@ -10,6 +10,7 @@
  * we force an update */
 #define POSE_LOST_ORIENT_THRESHOLD 100
 
+#define MIN_POS_ERROR 0.1
 
 rift_tracked_device_simulator *rift_tracked_device_simulator_new(
 	int device_id, rift_tracked_device_imu_calibration *imu_calibration,
@@ -72,7 +73,7 @@ void rift_tracked_device_simulator_imu_update(rift_tracked_device_simulator *dev
 void rift_tracked_device_simulator_model_pose_update(rift_tracked_device_simulator *dev,
 	uint64_t local_ts, uint64_t device_ts, uint64_t frame_start_local_ts, int delay_slot,
 	uint32_t score_flags, bool update_position, bool update_orientation,
-	posef *model_pose, const char *source)
+	posef *model_pose, vec3f *model_obs_pos_error, const char *source)
 {
 	if (delay_slot == -1)
 		return;
@@ -81,17 +82,19 @@ void rift_tracked_device_simulator_model_pose_update(rift_tracked_device_simulat
 		return;
 
 	posef imu_pose;
+	vec3f imu_obs_pos_error; /* Model observation position error transformed to IMU */
 
 	/* Apply the fusion->model pose on top of the passed model->global pose,
 	 * to get the global IMU pose */
 	oposef_apply(&dev->fusion_from_model, model_pose, &imu_pose);
+	oquatf_get_rotated (&dev->fusion_from_model.orient, model_obs_pos_error, &imu_obs_pos_error);
 
 	if (update_position) {
 		if (update_orientation) {
-			rift_kalman_6dof_pose_update(&dev->ukf_fusion, dev->device_time_ns, &imu_pose, delay_slot);
+			rift_kalman_6dof_pose_update(&dev->ukf_fusion, dev->device_time_ns, &imu_pose, &imu_obs_pos_error, delay_slot);
 			dev->last_observed_orient_ts = dev->device_time_ns;
 		} else {
-			rift_kalman_6dof_position_update(&dev->ukf_fusion, dev->device_time_ns, &imu_pose.pos, delay_slot);
+			rift_kalman_6dof_position_update(&dev->ukf_fusion, dev->device_time_ns, &imu_pose.pos, &imu_obs_pos_error, delay_slot);
 		}
 
 		dev->last_observed_pose_ts = dev->device_time_ns;
@@ -108,6 +111,7 @@ void rift_tracked_device_simulator_on_exposure (rift_tracked_device_simulator *d
 		dev->device_time_ns = device_ts;
 
 		slot->device_time_ns = dev->device_time_ns;
+		slot->exposure_ts_ns = exposure_ts;
 		slot->valid = true;
 		slot->use_count = 0;
 		slot->n_pose_reports = 0;
@@ -116,6 +120,35 @@ void rift_tracked_device_simulator_on_exposure (rift_tracked_device_simulator *d
 		/* Tell the kalman filter to prepare the delay slot */
 		rift_kalman_6dof_prepare_delay_slot(&dev->ukf_fusion, dev->device_time_ns, delay_slot);
 	}
+}
+
+void rift_tracked_device_simulator_get_exposure_info (rift_tracked_device_simulator *dev, int delay_slot,
+	rift_tracked_device_exposure_info *dev_info)
+{
+	rift_tracker_pose_delay_slot *slot = &dev->delay_slots[delay_slot];
+	posef imu_global_pose;
+	vec3f global_pos_error, global_rot_error;
+
+	dev_info->device_time_ns = slot->device_time_ns;
+	dev_info->fusion_slot = delay_slot;
+
+	if (dev->device_time_ns - dev->last_observed_pose_ts < (POSE_LOST_THRESHOLD * 1000000UL))
+		dev_info->had_pose_lock = true;
+	else
+		dev_info->had_pose_lock = false;
+
+	rift_kalman_6dof_get_delay_slot_pose_at(&dev->ukf_fusion, dev_info->device_time_ns, slot->slot_id, &imu_global_pose,
+					NULL, NULL, NULL, &global_pos_error, &global_rot_error);
+
+	oposef_apply(&dev->model_from_fusion, &imu_global_pose, &dev_info->capture_pose);
+
+	int i;
+	for (i = 0; i < 3; i++) {
+		if (global_pos_error.arr[i] < MIN_POS_ERROR)
+			global_pos_error.arr[i] = MIN_POS_ERROR;
+	}
+
+	oquatf_get_rotated_abs(&dev->model_from_fusion.orient, &global_pos_error, &dev_info->pos_error);
 }
 
 void rift_tracked_device_simulator_frame_captured (rift_tracked_device_simulator *dev, uint64_t local_ts,
@@ -161,7 +194,11 @@ void rift_tracked_device_simulator_get_model_pose(rift_tracked_device_simulator 
 					imu_accel.x = imu_accel.y = imu_accel.z = 0.0;
 	}
 
+#if 0
 	exp_filter_pose_run(&dev->pose_output_filter, dev->device_time_ns, &model_pose, &dev->reported_pose);
+#else
+	dev->reported_pose = model_pose;
+#endif
 	dev->last_reported_pose = dev->device_time_ns;
 
 	/* Angular Velocity and acceleration need rotating into the device space.
