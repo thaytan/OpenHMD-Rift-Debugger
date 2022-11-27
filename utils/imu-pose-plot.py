@@ -122,6 +122,6 @@ for col in range(num_cols):
         axs[i][col].legend(loc='lower right')
 
 fig.tight_layout(pad=0.1)
-fig.canvas.set_window_title('IMU Pose plot ' + sys.argv[1])
+fig.canvas.manager.set_window_title('IMU Pose plot ' + sys.argv[1])
 plt.subplots_adjust(left=0.05, bottom=0.05, right=0.95, top=0.95, wspace=0.1, hspace=0.1)
 plt.show()

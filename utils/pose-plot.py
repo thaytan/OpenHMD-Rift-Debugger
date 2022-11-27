@@ -127,7 +127,7 @@ else:
     num_cols = 2
 
 fig, axs = plt.subplots(3, num_cols, sharex=True)
-fig.canvas.set_window_title('Pose plot ' + sys.argv[1])
+fig.canvas.manager.set_window_title('Pose plot ' + sys.argv[1])
 
 axis_names = ['Roll', 'Pitch', 'Yaw', 'X', 'Y', 'Z', 'vel X', 'vel Y', 'vel Z' ]
 
