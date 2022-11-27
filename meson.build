@@ -58,6 +58,7 @@ trackersimlib_sources = [
   'src/lib/recording-loader.c',
   'src/lib/recording-data.c',
   'src/lib/rift-kalman-6dof-v2.c',
+  'src/lib/rift-kalman-orient.c',
   'src/lib/utils.c'
 ]
 
