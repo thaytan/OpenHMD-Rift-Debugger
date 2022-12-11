@@ -77,6 +77,8 @@ struct rift_tracked_device_simulator {
 	posef model_pose;
 
 	exp_filter_pose pose_output_filter;
+
+  rift_leds leds;
 };
 
 rift_tracked_device_simulator *rift_tracked_device_simulator_new(
@@ -89,7 +91,11 @@ void rift_tracked_device_simulator_imu_update(rift_tracked_device_simulator *dev
 	uint64_t local_ts, uint64_t device_ts,
 	const vec3f* ang_vel, const vec3f* accel, const vec3f* mag_field);
 
-void rift_tracked_device_simulator_model_pose_update(rift_tracked_device_simulator *dev,
+bool rift_tracked_device_simulator_model_pose_update(rift_tracked_device_simulator *dev,
+    rift_tracker_exposure_info *exposure_info,
+    rift_pose_metrics *score, posef *model_pose, vec3f *model_obs_pos_error, const char *source);
+
+void rift_tracked_device_simulator_model_pose_update_reference(rift_tracked_device_simulator *dev,
 	uint64_t local_ts, uint64_t device_ts, uint64_t frame_start_local_ts, int delay_slot,
   uint32_t score_flags, bool update_position, bool update_orientation,
 	posef *model_pose, vec3f *model_obs_pos_error, const char *source);

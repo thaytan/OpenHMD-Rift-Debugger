@@ -23,6 +23,8 @@ typedef struct recording_simulator_stream_video recording_simulator_stream_video
 typedef struct recording_simulator_event recording_simulator_event;
 typedef struct recording_simulator_stream_events recording_simulator_stream_events;
 
+static void
+simulator_update_tracked_devices (recording_simulator *sim);
 static bool
 simulator_update_sensor_calibration (recording_simulator *sim, recording_simulator_stream_video *sim_stream);
 static bool
@@ -55,6 +57,9 @@ struct recording_simulator {
 
 	int n_devices;
 	recording_simulator_stream_events *tracked_device_event_stream[RIFT_MAX_TRACKED_DEVICES];
+
+  int n_tracked_devices;
+	rift_tracked_device *tracked_devices[RIFT_MAX_TRACKED_DEVICES];
 };
 
 struct recording_simulator_stream {
@@ -479,6 +484,7 @@ static void handle_on_event(void *cb_data, recording_loader_stream *stream, uint
 							&data->device_id.imu_calibration, &data->device_id.imu_pose,
 							&data->device_id.model_pose,
 							data->device_id.num_leds, data->device_id.leds);
+
 			if (simulator->json_output_dir != NULL && sim_stream->json_out == NULL) {
 				gchar *json_out_location = g_strdup_printf ("%s/openhmd-device-%d",
 				                             simulator->json_output_dir, data->device_id.device_id);
@@ -489,6 +495,8 @@ static void handle_on_event(void *cb_data, recording_loader_stream *stream, uint
 				sim_stream->json_out = fopen(json_out_location, "w");
 				g_free (json_out_location);
 			}
+
+      simulator_update_tracked_devices(simulator);
 			break;
 
 		case DATA_POINT_SENSOR_CONFIG:
@@ -546,6 +554,12 @@ static void handle_on_event(void *cb_data, recording_loader_stream *stream, uint
       g_print ("Pose observation stream %s from sensor %s\n",
           sim_stream->s.stream_name, data->pose.serial_no);
 
+      /* Pose observations from the stream are dropped for now when runnning a
+       * full simulation. Later we could store them for display / comparison
+       * against the new code */
+	    if (simulator->full_simulation)
+        break;
+
       /* Compute an error of 1cm at right angles to the camera, and 3cm in Z.
        * FIXME: Compute based on pixel error and distance from camera and pass
        * it in */
@@ -562,7 +576,7 @@ static void handle_on_event(void *cb_data, recording_loader_stream *stream, uint
 				world_obs_pos_error = cam_obs_pos_error;
 			}
 
-			rift_tracked_device_simulator_model_pose_update(sim_stream->device,
+			rift_tracked_device_simulator_model_pose_update_reference(sim_stream->device,
 					data->pose.local_ts, data->pose.frame_device_ts, data->pose.frame_start_local_ts,
 					data->pose.delay_slot,
 					data->pose.score_flags, data->pose.update_position, data->pose.update_orientation,
@@ -667,6 +681,8 @@ static void handle_video_frame(void *cb_data, recording_loader_stream *stream, u
 
 		sim_stream->sensor = recording_simulator_sensor_new(sim_stream->serial_no,
 		    &sim_stream->calibration, pose);
+
+    simulator_update_tracked_devices(simulator);
 	}
 
 	/* And process the frame */
@@ -739,6 +755,28 @@ bool recording_simulator_load(recording_simulator *sim, const char *filename_or_
 	return recording_loader_load(sim->loader, filename_or_uri);
 }
 
+static void
+simulator_update_tracked_devices (recording_simulator *sim)
+{
+  int i;
+
+  sim->n_tracked_devices = 0;
+  for (i = 0; i < sim->n_devices; i++) {
+	  if (sim->tracked_device_event_stream[i]->device == NULL)
+      continue;
+
+	  sim->tracked_devices[i] = (rift_tracked_device *) sim->tracked_device_event_stream[i]->device;
+    sim->n_tracked_devices++;
+  }
+
+  for (i = 0; i < sim->n_sensors; i++) {
+		recording_simulator_stream_video *sim_stream = sim->sensor_video_stream[i];
+	  if (sim_stream->sensor != NULL) {
+      recording_simulator_sensor_set_devices(sim_stream->sensor, sim->tracked_devices, sim->n_tracked_devices);
+    }
+  }
+}
+
 static bool
 simulator_update_sensor_calibration (recording_simulator *sim, recording_simulator_stream_video *sim_stream)
 {
@@ -756,11 +794,13 @@ simulator_update_sensor_calibration (recording_simulator *sim, recording_simulat
 	struct data_point *calib = &calib_event->data;
 
 	memcpy(sim_stream->serial_no, calib->sensor_config.serial_no, RIFT_SENSOR_SERIAL_LEN+1);
-	sim_stream->calibration.is_cv1 = calib->sensor_config.is_cv1;
-	sim_stream->calibration.camera_matrix = calib->sensor_config.camera_matrix;
+	sim_stream->calibration.dist_fisheye = sim_stream->calibration.is_cv1 = calib->sensor_config.is_cv1;
 
+	memcpy(&sim_stream->calibration.camera_matrix, &calib->sensor_config.camera_matrix,
+			sizeof(calib->sensor_config.camera_matrix));
 	memcpy(sim_stream->calibration.dist_coeffs, calib->sensor_config.dist_coeffs,
 			sizeof(calib->sensor_config.dist_coeffs));
+	sim_stream->calibration.is_cv1 = calib->sensor_config.is_cv1;
 
 	/* Check the video width/height makes sense and set it into the calibration width/height */
 	if (calib->sensor_config.is_cv1) {
