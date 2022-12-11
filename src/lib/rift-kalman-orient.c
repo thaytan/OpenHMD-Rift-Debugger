@@ -78,6 +78,14 @@ static const int DELAY_SLOT_COV_SIZE = 3;
 
 #define NS_TO_SEC(t) ((double)(t) / 1000000000.0)
 
+#define DUMP_FULL_DEBUG 0
+
+#if DUMP_FULL_DEBUG
+#define DEBUG(s,...) printf(s,__VA_ARGS__)
+#else
+#define DEBUG(s,...)
+#endif
+
 #if 0
 static void print_col_vec(const char *label, uint64_t ts, const matrix2d *mat)
 {
@@ -156,7 +164,7 @@ static bool process_func(const ukf_base *ukf, const double dt, const matrix2d *X
 	oquatd_normalize_me(&orient);
 
 #if 1
-	printf("Orient Device %d dt %f ang vel %f %f %f - bias %f %f %f + noise %f %f %f orient %f %f %f %f delta %f %f %f %f out %f %f %f %f\n",
+	DEBUG("Orient Device %d dt %f ang vel %f %f %f - bias %f %f %f + noise %f %f %f orient %f %f %f %f delta %f %f %f %f out %f %f %f %f\n",
 		filter_state->device_id, dt,
 		imu_ang_vel.x, imu_ang_vel.y, imu_ang_vel.z,
 		ang_vel_bias.x, ang_vel_bias.y, ang_vel_bias.z,
@@ -401,7 +409,7 @@ static bool gravity_measurement_func(const ukf_base *ukf, const ukf_measurement 
 	MATRIX2D_Y(z, GRAVITY_MEAS_ORIENT+2) = pose_gravity_swing.z;
 	MATRIX2D_Y(z, GRAVITY_MEAS_ORIENT+3) = pose_gravity_swing.w;
 
-	printf ("orient %f %f %f %f swing %f %f %f %f\n",
+	DEBUG ("orient %f %f %f %f swing %f %f %f %f\n",
 		orient.x, orient.y, orient.z, orient.w,
 		pose_gravity_swing.x, pose_gravity_swing.y, pose_gravity_swing.z, pose_gravity_swing.w);
 
@@ -669,7 +677,7 @@ rift_kalman_orient_update(rift_kalman_orient_filter *state, uint64_t time, ukf_m
 			dt = 0;
 			state->first_update = false;
 			state->first_ts = time;
-			printf("orient filter Device %d gyro bias noise %f initial %f \n"
+			DEBUG("orient filter Device %d gyro bias noise %f initial %f \n"
 			  " pose process noise %f\n",
 				state->device_id, IMU_GYRO_BIAS_NOISE, IMU_GYRO_BIAS_NOISE_INITIAL,
 				POSE_PROCESS_NOISE);
@@ -681,12 +689,12 @@ rift_kalman_orient_update(rift_kalman_orient_filter *state, uint64_t time, ukf_m
 	}
 
 	reset_noise(state, state->ukf.x_prior, state->ukf.P_prior);
-	printf("======== Orient Device %d BEGIN delay_slot %d dt %f ==========\n", state->device_id, state->pose_slot, dt);
+	DEBUG("======== Orient Device %d BEGIN delay_slot %d dt %f ==========\n", state->device_id, state->pose_slot, dt);
 	if (!ukf_base_predict(&state->ukf, dt)) {
 		LOGE ("Failed to compute UKF prediction at time %llu (dt %f)", (unsigned long long) state->current_ts, dt);
 		return;
 	}
-	printf("======== Orient Device %d END predict ==========\n", state->device_id);
+	DEBUG("======== Orient Device %d END predict ==========\n", state->device_id);
 
 	if (m) {
 		if (!ukf_base_update(&state->ukf, m)) {
@@ -703,7 +711,7 @@ rift_kalman_orient_update(rift_kalman_orient_filter *state, uint64_t time, ukf_m
 			return;
 		}
 	}
-	printf("======== Orient Device %d END update ==========\n", state->device_id);
+	DEBUG("======== Orient Device %d END update ==========\n", state->device_id);
 
 	// print_col_vec ("UKF Mean after update", state->current_ts, state->ukf.x_prior);
 }
@@ -852,13 +860,14 @@ static bool orient_quat_from_gravity(quatd *orient, const vec3d *accel)
 	quatd pose_gravity_swing, pose_gravity_twist;
 	oquatd_decompose_swing_twist(orient, &up, &pose_gravity_swing, &pose_gravity_twist);
 
-  printf("gravity %f %f %f %f vs swing %f %f %f %f\n",
+  DEBUG("gravity %f %f %f %f vs swing %f %f %f %f\n",
     orient->x, orient->y, orient->z, orient->w,
     pose_gravity_swing.x, pose_gravity_swing.y, pose_gravity_swing.z, pose_gravity_swing.w);
 
 	return true;
 }
 
+#if DUMP_FULL_DEBUG
 static double
 oquatd_get_angle(const quatd *q1, const quatd *q2)
 {
@@ -876,7 +885,7 @@ oquatf_get_angle(const quatf *q1, const quatf *q2)
 	oquatf_diff(q1, q2, &diff);
 	return 2 * acos(diff.w);
 }
-
+#endif
 
 void rift_kalman_orient_imu_update (rift_kalman_orient_filter *state, uint64_t time, const vec3f* ang_vel, const vec3d* unbiased_accel, const vec3f* mag_field)
 {
@@ -917,14 +926,14 @@ void rift_kalman_orient_imu_update (rift_kalman_orient_filter *state, uint64_t t
 	if (state->quasi_stationary_ts == 0 ||
 			fabs(ovec3d_get_length(unbiased_accel) - state->gravity_mean) > 0.5f ||
 			ovec3d_get_length(&unbiased_gyro) > 1.0f) {
-#if 1
-		printf("Orient Device %d TS %f (%f) Resetting quasi stationary ts after %f with accel %f gyro %f bias %f %f %f\n",
+
+		DEBUG("Orient Device %d TS %f (%f) Resetting quasi stationary ts after %f with accel %f gyro %f bias %f %f %f\n",
 				state->device_id, NS_TO_SEC(time), NS_TO_SEC((int64_t)(time - state->first_ts)),
 				NS_TO_SEC(time - state->quasi_stationary_ts),
 				ovec3d_get_length(unbiased_accel) - state->gravity_mean,
 				ovec3d_get_length(&unbiased_gyro),
 				gyro_bias.x, gyro_bias.y, gyro_bias.z);
-#endif
+
 		state->quasi_stationary_ts = time;
 		ovec3d_set (&state->quasi_stationary_accel_sum, 0.0, 0.0, 0.0);
 		state->quasi_stationary_accel_n = 0;
@@ -946,11 +955,10 @@ void rift_kalman_orient_imu_update (rift_kalman_orient_filter *state, uint64_t t
 
 		/* Update the mean gravity */
 		ovec3d_multiply_scalar(&imu_gravity, 1.0 / state->quasi_stationary_accel_n, &imu_gravity);
-		printf("Orient gravity_mean %f + %f\n", state->gravity_mean, ovec3d_get_length(&imu_gravity));
 		state->gravity_mean = 0.999 * state->gravity_mean + 0.001 * ovec3d_get_length (&imu_gravity);
 
 #if 1
-		printf("Orient Device %d TS %f (%f) IMU measurement after %f with gravity mean %f mag %f vec %f %f %f "
+		DEBUG("Orient Device %d TS %f (%f) IMU measurement after %f with gravity mean %f mag %f vec %f %f %f "
 				"accel mag %f gyro %f bias %f %f %f gravity prior %f %f %f (error %f) orient cov %f %f %f\n",
 				state->device_id, NS_TO_SEC(time), NS_TO_SEC((int64_t)(time - state->first_ts)),
 				NS_TO_SEC(time - state->last_imu_update_ts),
@@ -1011,14 +1019,14 @@ void rift_kalman_orient_imu_update (rift_kalman_orient_filter *state, uint64_t t
 		//orient_quat_from_gravity(&orient_prior, &gravity_prior);
 		//orient_quat_from_gravity(&orient_post, &new_gravity);
 
-		printf("Orient Device %d TS %f (%f) post IMU measurement f vec %f %f %f cov %f %f %f\n",
+		DEBUG("Orient Device %d TS %f (%f) post IMU measurement f vec %f %f %f cov %f %f %f\n",
 				state->device_id, NS_TO_SEC(time), NS_TO_SEC((int64_t)(time - state->first_ts)),
 				new_gravity.x, new_gravity.y, new_gravity.z,
 				MATRIX2D_XY(state->ukf.P_prior, COV_ORIENTATION, COV_ORIENTATION),
 				MATRIX2D_XY(state->ukf.P_prior, COV_ORIENTATION+1, COV_ORIENTATION+1),
 				MATRIX2D_XY(state->ukf.P_prior, COV_ORIENTATION+2, COV_ORIENTATION+2));
 
-		printf("Orient Device %d TS %f (%f) IMU ang_vel %f %f %f accel %f %f %f orient %f %f %f %f prior %f %f %f %f error %f post %f %f %f %f error %f\n",
+		DEBUG("Orient Device %d TS %f (%f) IMU ang_vel %f %f %f accel %f %f %f orient %f %f %f %f prior %f %f %f %f error %f post %f %f %f %f error %f\n",
 				state->device_id, NS_TO_SEC(time), NS_TO_SEC((int64_t)(time - state->first_ts)),
 				unbiased_gyro.x, unbiased_gyro.y, unbiased_gyro.z,
 				unbiased_accel->x, unbiased_accel->y, unbiased_accel->z,
@@ -1037,7 +1045,7 @@ void rift_kalman_orient_pose_update(rift_kalman_orient_filter *state, uint64_t t
 
 	posef prior_pose;
   rift_kalman_orient_get_delay_slot_pose_at(state, time, delay_slot, &prior_pose, NULL, NULL);
-	printf("Orient Device %d TS %f rel %f dt %f Pose update delay slot %d orient %f %f %f %f (prior orient %f %f %f %f error %f)\n",
+	DEBUG("Orient Device %d TS %f rel %f dt %f Pose update delay slot %d orient %f %f %f %f (prior orient %f %f %f %f error %f)\n",
 			state->device_id, NS_TO_SEC(time), NS_TO_SEC((int64_t)(time - state->first_ts)),
 			NS_TO_SEC((int64_t)(time - state->current_ts)), delay_slot, 
 			pose->orient.x, pose->orient.y, pose->orient.z, pose->orient.w,
