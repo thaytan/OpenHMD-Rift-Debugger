@@ -67,6 +67,8 @@ struct rift_tracked_device_simulator {
 	uint64_t last_observed_pose_ts;
 	posef last_observed_pose;
 
+	uint64_t last_acquired_pose_lock_ts;
+
 	/* Reported view pose (to the user) and model pose (for the tracking) respectively */
 	uint64_t last_reported_pose;
 	posef reported_pose;
@@ -78,12 +80,13 @@ struct rift_tracked_device_simulator {
 
 	exp_filter_pose pose_output_filter;
 
-  rift_leds leds;
+	rift_leds leds;
 };
 
 rift_tracked_device_simulator *rift_tracked_device_simulator_new(
 	int device_id, rift_tracked_device_imu_calibration *imu_calibration,
 	posef *imu_pose, posef *model_pose, int num_leds, rift_led *leds);
+void rift_tracked_device_simulator_set_index (rift_tracked_device_simulator *dev, int index);
 
 void rift_tracked_device_simulator_free(rift_tracked_device_simulator *dev);
 

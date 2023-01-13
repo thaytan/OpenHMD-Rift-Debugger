@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <inttypes.h>
 #include <glib.h>
 #include <stdio.h>
 #include <string.h>
@@ -44,7 +45,7 @@ struct recording_simulator {
 	bool full_simulation;
 
 	/* Last frame-captured "local-frame-ts" */
-	uint64_t last_frame_capture_ts;
+	uint64_t last_frame_capture_local_ts;
 
 	int exposure_history_index;
 	int exposure_history_size;
@@ -58,7 +59,7 @@ struct recording_simulator {
 	int n_devices;
 	recording_simulator_stream_events *tracked_device_event_stream[RIFT_MAX_TRACKED_DEVICES];
 
-  int n_tracked_devices;
+	int n_tracked_devices;
 	rift_tracked_device *tracked_devices[RIFT_MAX_TRACKED_DEVICES];
 };
 
@@ -394,18 +395,40 @@ static bool get_exposure_info (recording_simulator *ctx,
 	int i;
 
 	/* Find and populate the exposure info and return true if found */
-	bool have_exposure_info = false;
+	rift_tracker_exposure_info *found_info = NULL;
 
 	for (i = 0; i < ctx->exposure_history_size; i++) {
 		rift_tracker_exposure_info *info = ctx->exposure_history + i;
 		int64_t time_diff_ns = frame_start_local_ts - info->local_ts;
 		if (time_diff_ns > -10000000 && time_diff_ns < 10000000) {
-			have_exposure_info = true;
-			*out_info = *info;
+			found_info = info;
+			break;
 		}
 	}
 
-	return have_exposure_info;
+	if (found_info == NULL)
+		return false;
+
+	/* Check that we got exposure events for all the online devices,
+	 * or else skip the frame */
+	if (found_info->n_devices != ctx->n_tracked_devices) {
+		printf("Skipping frame HMD TS %u due to missing exposure info for a device\n",
+				found_info->hmd_ts);
+		return false;
+	}
+
+	/* Copy to the output info, but put devices in the right index order,
+	 * as events from each device can arrive in a different order in the recording */
+	*out_info = *found_info;
+	for (i = 0; i < found_info->n_devices; i++) {
+		rift_tracked_device_exposure_info *exp_dev_info = found_info->devices + i;
+		if (exp_dev_info->device_index != i) {
+			printf("Frame HMD TS %u - reordering exposure info slot %d to %d\n",
+					found_info->hmd_ts, i, exp_dev_info->device_index);
+			out_info->devices[exp_dev_info->device_index] = *exp_dev_info;
+		}
+	}
+	return true;
 }
 
 static void store_exposure_info (recording_simulator *ctx,
@@ -425,28 +448,37 @@ static void store_exposure_info (recording_simulator *ctx,
 		else {
 			is_new_exposure = false;
 		}
-
-		info = ctx->exposure_history + ctx->exposure_history_index;
 	}
 	else {
-		info = ctx->exposure_history;
 		ctx->exposure_history_index = 0;
 		ctx->exposure_history_size = 1;
 	}
 
-	info->local_ts = local_ts;
-	info->count = exposure_count;
-	info->hmd_ts = exposure_ts;
-	info->led_pattern_phase = 0;
+	info = ctx->exposure_history + ctx->exposure_history_index;
+	if (is_new_exposure) {
+		info->local_ts = local_ts;
+		info->count = exposure_count;
+		info->hmd_ts = exposure_ts;
+		info->led_pattern_phase = 0;
 
-	if (is_new_exposure)
 		info->n_devices = 0;
+	}
+	else {
+		assert (info->hmd_ts == exposure_ts);
+	}
 
 	assert (info->n_devices < NUM_EXPOSURE_HISTORY);
 
 	rift_tracked_device_exposure_info *dev_info = &info->devices[info->n_devices];
+	dev_info->device_index = dev->index;
 
 	rift_tracked_device_simulator_get_exposure_info (dev, delay_slot, dev_info);
+
+	printf("Exposure entry %d slot %d: stored device %d HMD TS %u"
+	    " delay slot %d device_ts %" PRIu64 "\n",
+	    ctx->exposure_history_index, info->n_devices,
+	    dev->base.id, exposure_ts, delay_slot,
+	    dev_info->device_time_ns);
 
 	info->n_devices++;
 }
@@ -496,7 +528,7 @@ static void handle_on_event(void *cb_data, recording_loader_stream *stream, uint
 				g_free (json_out_location);
 			}
 
-      simulator_update_tracked_devices(simulator);
+			simulator_update_tracked_devices(simulator);
 			break;
 
 		case DATA_POINT_SENSOR_CONFIG:
@@ -551,24 +583,24 @@ static void handle_on_event(void *cb_data, recording_loader_stream *stream, uint
 				break;
 			}
 
-      g_print ("Pose observation stream %s from sensor %s\n",
-          sim_stream->s.stream_name, data->pose.serial_no);
+			g_print ("Pose observation on stream %s from sensor %s\n",
+			    sim_stream->s.stream_name, data->pose.serial_no);
 
-      /* Pose observations from the stream are dropped for now when runnning a
-       * full simulation. Later we could store them for display / comparison
-       * against the new code */
-	    if (simulator->full_simulation)
-        break;
+			/* Pose observations from the stream are dropped for now when runnning a
+			 * full simulation. Later we could store them for display / comparison
+			 * against the new code */
+			if (simulator->full_simulation)
+				break;
 
-      /* Compute an error of 1cm at right angles to the camera, and 3cm in Z.
-       * FIXME: Compute based on pixel error and distance from camera and pass
-       * it in */
-      vec3f cam_obs_pos_error = {{ 0.01, 0.01, 0.03 }};
-      vec3f world_obs_pos_error;
+			/* Compute an error of 1cm at right angles to the camera, and 3cm in Z.
+			 * FIXME: Compute based on pixel error and distance from camera and pass
+			 * it in */
+			vec3f cam_obs_pos_error = {{ 0.01, 0.01, 0.03 }};
+			vec3f world_obs_pos_error;
 
-      recording_simulator_stream_video *cam_sim_stream =
-        recording_simulator_find_sensor_stream (simulator, data->pose.serial_no);
-	    if (cam_sim_stream != NULL) {
+			recording_simulator_stream_video *cam_sim_stream =
+			    recording_simulator_find_sensor_stream (simulator, data->pose.serial_no);
+			if (cam_sim_stream != NULL) {
 				quatf *cam_orient = &cam_sim_stream->pose.orient;
 				oquatf_get_rotated(cam_orient, &cam_obs_pos_error, &world_obs_pos_error);
 			}
@@ -608,7 +640,7 @@ static void handle_on_event(void *cb_data, recording_loader_stream *stream, uint
 				break;
 			}
 
-			simulator->last_frame_capture_ts = data->frame_captured.frame_local_ts;
+			simulator->last_frame_capture_local_ts = data->frame_captured.frame_local_ts;
 
 			rift_tracked_device_simulator_frame_captured(sim_stream->device, data->frame_captured.local_ts,
 				data->frame_captured.frame_local_ts, data->frame_captured.delay_slot,
@@ -658,10 +690,10 @@ static void handle_video_frame(void *cb_data, recording_loader_stream *stream, u
 	}
 
 	if (!sim_stream->have_calibration) {
-    if (!simulator_update_sensor_calibration (simulator, sim_stream)) {
-		  g_printerr ("Received video frame for stream %s before config\n", sim_stream->s.stream_name);
-      return;
-    }
+		if (!simulator_update_sensor_calibration (simulator, sim_stream)) {
+			g_printerr ("Received video frame for stream %s before config\n", sim_stream->s.stream_name);
+			return;
+		}
 	}
 
 	if (!sim_stream->have_pose) {
@@ -682,31 +714,32 @@ static void handle_video_frame(void *cb_data, recording_loader_stream *stream, u
 		sim_stream->sensor = recording_simulator_sensor_new(sim_stream->serial_no,
 		    &sim_stream->calibration, pose);
 
-    simulator_update_tracked_devices(simulator);
+		simulator_update_tracked_devices(simulator);
 	}
 
 	/* And process the frame */
 #if 0
 	printf("Got video frame for sensor %s PTS %" G_GUINT64_FORMAT
-			" last frame ts %" G_GUINT64_FORMAT "\n",
-	    sim_stream->serial_no, pts, simulator->last_frame_capture_ts);
+	    " last frame ts %" G_GUINT64_FORMAT "\n",
+	    sim_stream->serial_no, pts, simulator->last_frame_capture_local_ts);
 #endif
 
 	assert (frame_len == sim_stream->stride * sim_stream->height);
 
 	rift_tracker_exposure_info exp_info = { 0, };
 
-	bool res = get_exposure_info(simulator, simulator->last_frame_capture_ts, &exp_info);
+	bool res = get_exposure_info(simulator, simulator->last_frame_capture_local_ts, &exp_info);
 	if (!res) {
 		printf("Missing exposure/capture events for video frame sensor %s PTS %" G_GUINT64_FORMAT
-				" last frame ts %" G_GUINT64_FORMAT "\n", sim_stream->serial_no, pts, simulator->last_frame_capture_ts);
+				" last frame local_ts %" G_GUINT64_FORMAT "\n", sim_stream->serial_no, pts, simulator->last_frame_capture_local_ts);
 		return;
 	}
 
 	ohmd_video_frame *frame = calloc(1, sizeof(ohmd_video_frame));
 
 	frame->format = OHMD_VIDEO_FRAME_FORMAT_GRAY8;
-	frame->pts = frame->start_ts = pts;
+	frame->pts = pts;
+	frame->start_ts = simulator->last_frame_capture_local_ts;
 	frame->data = frame_data;
 	frame->data_block_size = frame->data_size = frame_len;
 	frame->stride = sim_stream->stride;
@@ -758,23 +791,26 @@ bool recording_simulator_load(recording_simulator *sim, const char *filename_or_
 static void
 simulator_update_tracked_devices (recording_simulator *sim)
 {
-  int i;
+	int i;
 
-  sim->n_tracked_devices = 0;
-  for (i = 0; i < sim->n_devices; i++) {
-	  if (sim->tracked_device_event_stream[i]->device == NULL)
-      continue;
+	sim->n_tracked_devices = 0;
+	for (i = 0; i < sim->n_devices; i++) {
+		if (sim->tracked_device_event_stream[i]->device == NULL)
+			continue;
 
-	  sim->tracked_devices[i] = (rift_tracked_device *) sim->tracked_device_event_stream[i]->device;
-    sim->n_tracked_devices++;
-  }
+		rift_tracked_device_simulator *dev = sim->tracked_device_event_stream[i]->device;
+		rift_tracked_device_simulator_set_index (dev, i);
 
-  for (i = 0; i < sim->n_sensors; i++) {
+		sim->tracked_devices[i] = (rift_tracked_device *) dev;
+		sim->n_tracked_devices++;
+	}
+
+	for (i = 0; i < sim->n_sensors; i++) {
 		recording_simulator_stream_video *sim_stream = sim->sensor_video_stream[i];
-	  if (sim_stream->sensor != NULL) {
-      recording_simulator_sensor_set_devices(sim_stream->sensor, sim->tracked_devices, sim->n_tracked_devices);
-    }
-  }
+		if (sim_stream->sensor != NULL) {
+			recording_simulator_sensor_set_devices(sim_stream->sensor, sim->tracked_devices, sim->n_tracked_devices);
+		}
+	}
 }
 
 static bool
