@@ -946,7 +946,7 @@ void rift_kalman_orient_imu_update (rift_kalman_orient_filter *state, uint64_t t
 	/* If it's been quasi stationary for more than 20ms, do a correction every 10 samples, averaging them */
 	quatd imu_gravity_orient;
 
-	if (0 && !state->first_update &&
+	if (!state->first_update &&
 			(time - state->quasi_stationary_ts >= 20000000 && state->quasi_stationary_accel_n >= 10) &&
 			orient_quat_from_gravity(&imu_gravity_orient, &state->quasi_stationary_accel_sum)) {
 
