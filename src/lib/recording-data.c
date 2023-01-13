@@ -209,6 +209,7 @@ parse_json_point_node(JsonNode *node, data_point *point, GError **error)
 			}
 
 			rift_led *led = point->device_id.leds + i;
+			led->id = i;
 
 			if (!parse_json_vec3f(&led->pos, led_json, "pos", error))
 				return false;
