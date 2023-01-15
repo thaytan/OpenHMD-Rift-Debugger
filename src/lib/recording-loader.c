@@ -50,6 +50,8 @@ struct recording_loader_stream
 
   void *callback_data;
 
+	GstSegment demux_segment;
+
   /* Element that handles this stream */
   GstElement *target;
 
@@ -280,13 +282,14 @@ handle_demuxed_video_buffer (GstPad * pad, GstPadProbeInfo * info,
     GstBuffer *buffer = GST_PAD_PROBE_INFO_DATA (info);
     GstMapInfo map = GST_MAP_INFO_INIT;
     GstClockTime pts = GST_BUFFER_PTS (buffer);
+    GstClockTime ts = gst_segment_to_stream_time (&stream->demux_segment, GST_FORMAT_TIME, pts);
 
     if (!gst_buffer_map (buffer, &map, GST_MAP_READ)) {
       GST_PAD_PROBE_INFO_FLOW_RETURN (info) = GST_FLOW_ERROR;
       return GST_PAD_PROBE_OK;
     }
     ret = reader->callbacks.on_encoded_frame (reader->callback_data,
-        stream, (uint64_t) pts, map.data, map.size);
+        stream, (uint64_t) ts, map.data, map.size);
     gst_buffer_unmap (buffer, &map);
 
     if (!ret)
@@ -296,32 +299,50 @@ handle_demuxed_video_buffer (GstPad * pad, GstPadProbeInfo * info,
   return GST_PAD_PROBE_OK;
 }
 
+static GstPadProbeReturn
+handle_demuxed_video_events (GstPad * pad, GstPadProbeInfo * info,
+    gpointer user_data)
+{
+  recording_loader_stream *stream = user_data;
+  recording_loader *reader = stream->reader;
+
+  /* Don't do anything during initial stream ID pass or for disabled streams */
+  if (reader->finding_stream_ids || !stream->enabled) {
+    return GST_PAD_PROBE_OK;
+  }
+
+  GstEvent *event = GST_PAD_PROBE_INFO_DATA (info);
+	if (GST_EVENT_TYPE (event) == GST_EVENT_SEGMENT) {
+    const GstSegment *s;
+    gst_event_parse_segment (event, &s);
+    gst_segment_copy_into (s, &stream->demux_segment);
+	}
+
+  return GST_PAD_PROBE_OK;
+}
+
 static GstFlowReturn
 handle_decoded_video_buffer (recording_loader * reader,
-    recording_loader_stream * stream, GstBuffer * buffer)
+    recording_loader_stream * stream, GstClockTime ts, GstBuffer * buffer)
 {
   GstMapInfo map = GST_MAP_INFO_INIT;
-  GstClockTime pts;
   stream->frames_decoded++;
 
-  pts = GST_BUFFER_PTS (buffer);
   if (!gst_buffer_map (buffer, &map, GST_MAP_READ))
     return GST_FLOW_ERROR;
 
   g_mutex_lock (&reader->stream_lock);
-  GST_DEBUG ("stream %d video frame PTS %" GST_TIME_FORMAT, stream->stream_id,
-      GST_TIME_ARGS (pts));
+  GST_DEBUG ("stream %d video frame TS %" GST_TIMEP_FORMAT, stream->stream_id, &ts);
 
-  if (reader->last_pts > pts) {
-    GST_WARNING ("Time went backward - video frame %" GST_TIME_FORMAT
-        " < prev PTS %" GST_TIME_FORMAT, GST_TIME_ARGS (pts),
-        GST_TIME_ARGS (reader->last_pts));
+  if (reader->last_pts > ts) {
+    GST_WARNING ("Time went backward - video frame %" GST_TIMEP_FORMAT
+        " < prev TS %" GST_TIMEP_FORMAT, &ts, &reader->last_pts);
   }
-  reader->last_pts = pts;
+  reader->last_pts = ts;
 
   if (stream->enabled && reader->callbacks.on_video_frame) {
     reader->callbacks.on_video_frame (reader->callback_data,
-        stream, pts, map.data, map.size);
+        stream, ts, map.data, map.size);
   }
   g_mutex_unlock (&reader->stream_lock);
 
@@ -332,12 +353,11 @@ handle_decoded_video_buffer (recording_loader * reader,
 
 static GstFlowReturn
 handle_json_buffer (recording_loader * reader, recording_loader_stream * stream,
-    GstBuffer * buffer)
+    GstClockTime ts, GstBuffer * buffer)
 {
   GstMapInfo info = GST_MAP_INFO_INIT;
   char *json_str;
   data_point data_point;
-  GstClockTime pts = GST_BUFFER_PTS (buffer);
 
   if (!gst_buffer_map (buffer, &info, GST_MAP_READ))
     return GST_FLOW_ERROR;
@@ -349,37 +369,36 @@ handle_json_buffer (recording_loader * reader, recording_loader_stream * stream,
   json_str = xml_unmarkup_string (stream->xu, (char *) info.data, info.size);
 
   if (stream->enabled && reader->callbacks.on_json_data) {
-    reader->callbacks.on_json_data (reader->callback_data, stream, pts,
+    reader->callbacks.on_json_data (reader->callback_data, stream, ts,
         json_str);
   }
 
   if (!json_parse_data_point_string (json_str, &data_point)) {
     g_printerr ("Failed to parse JSON buffer on Stream %d len %" G_GSIZE_FORMAT
         " TS %" G_GUINT64_FORMAT ": %s\n",
-        stream->stream_id, info.size, GST_BUFFER_PTS (buffer), json_str);
+        stream->stream_id, info.size, ts, json_str);
   } else {
 
     g_mutex_lock (&reader->stream_lock);
-    GST_DEBUG ("stream %d metadata point PTS %" GST_TIME_FORMAT,
-        stream->stream_id, GST_TIME_ARGS (pts));
+    GST_DEBUG ("stream %d metadata point TS %" GST_TIMEP_FORMAT,
+        stream->stream_id, &ts);
 #if 0
     fprintf (stderr,
         "Stream %d JSON buffer with len %" G_GSIZE_FORMAT " TS %"
         G_GUINT64_FORMAT ": %s\n", stream->stream_id, info.size,
         GST_BUFFER_PTS (buffer), json_str);
 #endif
-    if (reader->last_pts > pts) {
+    if (reader->last_pts > ts) {
       /* This happens sometimes when events during the recording overlap - the
        * timestamp is recorded in a thread before the event is written to the log,
        * and some other thread sneaks in first */
-      GST_LOG ("Time went backward - metadata point %" GST_TIME_FORMAT
-          " < prev PTS %" GST_TIME_FORMAT, GST_TIME_ARGS (pts),
-          GST_TIME_ARGS (reader->last_pts));
+      GST_LOG ("Time went backward - metadata point %" GST_TIMEP_FORMAT
+          " < prev PTS %" GST_TIMEP_FORMAT, &ts, &reader->last_pts);
     }
-    reader->last_pts = pts;
+    reader->last_pts = ts;
 
     if (stream->enabled && reader->callbacks.on_event) {
-      reader->callbacks.on_event (reader->callback_data, stream, pts,
+      reader->callbacks.on_event (reader->callback_data, stream, ts,
           &data_point, json_str);
     }
     g_mutex_unlock (&reader->stream_lock);
@@ -416,12 +435,6 @@ on_appsink_sample (GstAppSink * appsink, gpointer user_data)
 
       gst_caps_replace (&stream->caps, caps);
     }
-
-    GstBuffer *buf = gst_sample_get_buffer (sample);
-    if (buf) {
-      GST_LOG ("Sample on stream %d PTS %" G_GUINT64_FORMAT, stream->stream_id,
-          GST_BUFFER_PTS (buf));
-    }
   }
 
   if (reader->finding_stream_ids) {
@@ -434,11 +447,22 @@ on_appsink_sample (GstAppSink * appsink, gpointer user_data)
   if (sample) {
     GstBuffer *buf = gst_sample_get_buffer (sample);
 
+
     if (buf) {
+      GstSegment *seg = gst_sample_get_segment (sample);
+      g_assert (seg != NULL);
+
+      GstClockTime pts = GST_BUFFER_PTS (buf);
+			GstClockTime ts = gst_segment_to_stream_time (seg, GST_FORMAT_TIME, pts);
+
+      GST_LOG ("Sample on stream %d PTS %" G_GUINT64_FORMAT
+          " TS %" G_GUINT64_FORMAT, stream->stream_id,
+          pts, ts);
+
       if (stream->is_json) {
-        ret = handle_json_buffer (stream->reader, stream, buf);
+        ret = handle_json_buffer (stream->reader, stream, ts, buf);
       } else {
-        ret = handle_decoded_video_buffer (stream->reader, stream, buf);
+        ret = handle_decoded_video_buffer (stream->reader, stream, ts, buf);
       }
     }
 
@@ -467,6 +491,7 @@ gen_output (recording_loader * reader, gboolean is_json)
   stream->reader = reader;
   stream->stream_id = reader->next_stream_id++;
   stream->is_json = is_json;
+	gst_segment_init (&stream->demux_segment, GST_FORMAT_UNDEFINED);
 
   reader_add_stream (stream->reader, stream);
 
@@ -493,6 +518,8 @@ gen_output (recording_loader * reader, gboolean is_json)
 
     gst_pad_add_probe (sinkpad, GST_PAD_PROBE_TYPE_BUFFER,
         handle_demuxed_video_buffer, stream, NULL);
+    gst_pad_add_probe (sinkpad, GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM,
+        handle_demuxed_video_events, stream, NULL);
 
     gst_object_unref (sinkpad);
   }
