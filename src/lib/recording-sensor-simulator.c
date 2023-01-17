@@ -13,6 +13,7 @@
 #include "rift-sensor-pose-search.h"
 
 struct recording_simulator_sensor {
+	int id;
 	char *serial_no;
 	blobwatch* bw;
 	rift_pose_finder pf;
@@ -65,13 +66,14 @@ static bool handle_found_pose (recording_simulator_sensor *sensor,
 }
 
 recording_simulator_sensor *
-recording_simulator_sensor_new(char *serial_no, rift_sensor_camera_params *calibration, posef *pose)
+recording_simulator_sensor_new(int id, char *serial_no, rift_sensor_camera_params *calibration, posef *pose)
 {
 	recording_simulator_sensor *sensor = calloc(1, sizeof(recording_simulator_sensor));
 
 	sensor->serial_no = g_strdup(serial_no);
 	sensor->bw = blobwatch_new(calibration->is_cv1 ? BLOB_THRESHOLD_CV1 : BLOB_THRESHOLD_DK2);
 	rift_pose_finder_init(&sensor->pf, calibration, (rift_pose_finder_cb) handle_found_pose, sensor);
+	sensor->pf.sensor_id = sensor->id = id;
 
 	if (pose)
 		recording_simulator_sensor_set_pose(sensor, pose);
@@ -136,7 +138,7 @@ void recording_simulator_sensor_set_devices(recording_simulator_sensor *sensor,
 	}
 }
 
-static void init_frame_analysis(rift_sensor_analysis_frame *frame)
+static void init_frame_analysis(recording_simulator_sensor *sensor, rift_sensor_analysis_frame *frame)
 {
 	int d;
 	const rift_tracker_exposure_info *exposure_info = &frame->exposure_info;
@@ -148,16 +150,12 @@ static void init_frame_analysis(rift_sensor_analysis_frame *frame)
 	for (d = 0; d < exposure_info->n_devices; d++) {
 		rift_sensor_frame_device_state *dev_state = frame->capture_state + d;
 		const rift_tracked_device_exposure_info *exp_dev_info = exposure_info->devices + d;
-		const vec3f *rot_error = &exp_dev_info->rot_error;
-
-		dev_state->capture_world_pose = exp_dev_info->capture_pose;
-
-		/* Compute gravity error from XZ error range */
-		dev_state->gravity_error_rad = OHMD_MAX(rot_error->x, rot_error->z);
 
 		/* Mark the score as un-evaluated to start */
 		dev_state->score.match_flags = 0;
 		dev_state->found_device_pose = false;
+
+		rift_pose_finder_exp_info_to_dev_state (&sensor->pf, exp_dev_info, dev_state);
 	}
 	frame->n_devices = exposure_info->n_devices;
 }
@@ -240,7 +238,7 @@ recording_simulator_sensor_process_frame(recording_simulator_sensor *sensor,
 		aframe.exposure_info_valid = true;
 	}
 
-	printf("*** Sensor %s New frame PTS %" G_GUINT64_FORMAT " TS %" G_GUINT64_FORMAT "\n", sensor->serial_no,
+	printf("*** Sensor %s New frame PTS %" G_GUINT64_FORMAT " (local TS was %" G_GUINT64_FORMAT ")\n", sensor->serial_no,
 			vframe->pts, vframe->start_ts);
 	int d;
 
@@ -252,7 +250,7 @@ recording_simulator_sensor_process_frame(recording_simulator_sensor *sensor,
 	}
 	printf("\n");
 
-	init_frame_analysis(&aframe);
+	init_frame_analysis(sensor, &aframe);
 
 	blobwatch_process(sensor->bw, vframe->data, vframe->width, vframe->height, 0, NULL, 0, &bwobs);
 

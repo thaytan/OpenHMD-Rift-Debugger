@@ -13,6 +13,7 @@
 #define POSE_LOST_ORIENT_THRESHOLD 100
 
 #define MIN_POS_ERROR 0.1
+#define MIN_ROT_ERROR DEG_TO_RAD(25)
 
 void
 rift_leds_init (rift_leds *leds, uint8_t num_points)
@@ -227,7 +228,7 @@ bool rift_tracked_device_simulator_model_pose_update(rift_tracked_device_simulat
 			}
 
 			if (dev->last_acquired_pose_lock_ts == 0) {
-				printf("Device %d acquired pose lock at TS %" PRIu64 "\n", dev->base.id, dev->device_time_ns);
+				printf("Device %d acquired pose lock at TS %" PRIu64 " (source %s)\n", dev->base.id, dev->device_time_ns, source);
 				dev->last_acquired_pose_lock_ts = dev->device_time_ns;
 			}
 
@@ -301,6 +302,8 @@ void rift_tracked_device_simulator_get_exposure_info (rift_tracked_device_simula
 
 	int i;
 	for (i = 0; i < 3; i++) {
+		if (global_rot_error.arr[i] < MIN_ROT_ERROR)
+			global_rot_error.arr[i] = MIN_ROT_ERROR;
 		if (global_pos_error.arr[i] < MIN_POS_ERROR)
 			global_pos_error.arr[i] = MIN_POS_ERROR;
 	}
@@ -322,12 +325,13 @@ void rift_tracked_device_simulator_frame_captured (rift_tracked_device_simulator
 void rift_tracked_device_simulator_frame_release (rift_tracked_device_simulator *dev, uint64_t local_ts,
 	uint64_t frame_local_ts, int delay_slot, const char *source)
 {
-	if (delay_slot != -1) {
-		rift_tracker_pose_delay_slot *slot = &dev->delay_slots[delay_slot];
+	if (delay_slot == -1) {
+		return;
+	}
 
-		if (slot->use_count > 0) {
-			slot->use_count--;
-		}
+	rift_tracker_pose_delay_slot *slot = &dev->delay_slots[delay_slot];
+	if (slot->use_count > 0) {
+		slot->use_count--;
 	}
 }
 
@@ -384,12 +388,27 @@ void rift_tracked_device_simulator_get_model_pose(rift_tracked_device_simulator 
 		*vel = dev->reported_lin_vel;
 }
 
-/* Rift pose search calls this to get updates of the latest pose, which makes
- * sense in the real-time system with asynchronous and overlapping pose updates
- * happening, but for here where all pose search is synchronous, we don't
- * update anything and just return TRUE
+/* Rift pose search calls this to get updates of the latest pose. The simulator processes frames
+ * synchronously, so with only one sensor the pose we retrieve should be the same as what was
+ * originally stored in the device info - but with 2 or more sensors updating the
+ * fusion in turn, the pose can change after each sensor gets processed
  */
 bool rift_tracked_device_get_latest_exposure_info_pose (rift_tracked_device *dev_base, rift_tracked_device_exposure_info *dev_info)
 {
+	rift_tracked_device_simulator *dev = (rift_tracked_device_simulator *) dev_base;
+
+	if (dev_info->fusion_slot == -1)
+		return false;
+
+	rift_tracker_pose_delay_slot *slot = &dev->delay_slots[dev_info->fusion_slot];
+
+	/* Check the slot is still matching what we expect */
+	assert(slot->valid);
+	if (slot->device_time_ns != dev_info->device_time_ns) {
+		dev_info->fusion_slot = -1;
+		return false; /* The slot was filled by a later exposure */
+	}
+
+	rift_tracked_device_simulator_get_exposure_info(dev, dev_info->fusion_slot, dev_info);
 	return true;
 }

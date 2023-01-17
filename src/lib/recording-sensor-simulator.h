@@ -13,7 +13,7 @@
 
 typedef struct recording_simulator_sensor recording_simulator_sensor;
 
-recording_simulator_sensor *recording_simulator_sensor_new(char *serial_no, rift_sensor_camera_params *calibration,
+recording_simulator_sensor *recording_simulator_sensor_new(int id, char *serial_no, rift_sensor_camera_params *calibration,
 	posef *pose);
 void recording_simulator_sensor_free(recording_simulator_sensor *sensor);
 

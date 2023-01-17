@@ -2,6 +2,7 @@
 #include <inttypes.h>
 #include <glib.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "recording-simulator.h"
@@ -21,6 +22,7 @@
 
 typedef struct recording_simulator_stream recording_simulator_stream;
 typedef struct recording_simulator_stream_video recording_simulator_stream_video;
+typedef struct recording_simulator_video_frame recording_simulator_video_frame;
 typedef struct recording_simulator_event recording_simulator_event;
 typedef struct recording_simulator_stream_events recording_simulator_stream_events;
 
@@ -38,14 +40,16 @@ static bool get_exposure_info (recording_simulator *ctx, uint64_t frame_start_lo
 /* Number of exposure history slots to keep */
 #define NUM_EXPOSURE_HISTORY 3
 
+struct recording_simulator_video_frame {
+	ohmd_video_frame frame;
+	unsigned char frame_data[];
+};
+
 struct recording_simulator {
 	recording_loader *loader;
 
 	gchar *json_output_dir;
 	bool full_simulation;
-
-	/* Last frame-captured "local-frame-ts" */
-	uint64_t last_frame_capture_local_ts;
 
 	int exposure_history_index;
 	int exposure_history_size;
@@ -72,6 +76,8 @@ struct recording_simulator_stream {
 struct recording_simulator_stream_video {
 	recording_simulator_stream s;
 
+	int id;
+
 	bool have_stream_config;
 	int width, height, stride;
 
@@ -84,6 +90,11 @@ struct recording_simulator_stream_video {
 	bool have_video_before_pose;
 
 	recording_simulator_sensor *sensor;
+
+	int n_pending_frames;
+	int n_pending_frames_size;
+	recording_simulator_video_frame **pending_frames;
+	uint64_t last_frame_local_ts;
 };
 
 struct recording_simulator_event {
@@ -177,7 +188,7 @@ static void stream_events_free (recording_simulator_stream_events *stream) {
 }
 
 static recording_simulator_stream_video *stream_video_new (
-	recording_stream_type type, recording_simulator *simulator, const char *stream_name)
+	recording_stream_type type, recording_simulator *simulator, int id, const char *stream_name)
 {
 	recording_simulator_stream_video *sim_stream =
 			calloc(1, sizeof(recording_simulator_stream_video));
@@ -185,11 +196,33 @@ static recording_simulator_stream_video *stream_video_new (
 	sim_stream->s.sim = simulator;
 	sim_stream->s.stream_name = g_strdup (stream_name);
 	sim_stream->pose.orient.w = 1.0;
+	sim_stream->id = id;
 
 	return sim_stream;
 }
 
+static void stream_video_store_pending_frame (recording_simulator_stream_video *stream,
+    recording_simulator_video_frame *frame)
+{
+	if (stream->n_pending_frames >= stream->n_pending_frames_size) {
+		stream->n_pending_frames_size += 8;
+		stream->pending_frames = realloc (stream->pending_frames, stream->n_pending_frames_size * sizeof (recording_simulator_video_frame *));
+	}
+
+	stream->pending_frames[stream->n_pending_frames] = frame;
+	stream->n_pending_frames++;
+}
+
 static void stream_video_free (recording_simulator_stream_video *stream) {
+	int i;
+
+	if (stream->pending_frames) {
+		for (i = 0; i < stream->n_pending_frames; i++) {
+			free(stream->pending_frames[i]);
+		}
+		free(stream->pending_frames);
+	}
+
 	free(stream->s.stream_name);
 	free(stream);
 }
@@ -205,7 +238,7 @@ static void handle_new_stream(void *cb_data, recording_loader_stream *stream,
 			assert(simulator->n_sensors < RIFT_MAX_SENSORS);
 
 			recording_simulator_stream_video *sim_stream =
-					stream_video_new(type, simulator, stream_name);
+					stream_video_new(type, simulator, simulator->n_sensors, stream_name);
 
 			recording_loader_stream_set_cbdata(stream, sim_stream);
 
@@ -397,12 +430,16 @@ static bool get_exposure_info (recording_simulator *ctx,
 	/* Find and populate the exposure info and return true if found */
 	rift_tracker_exposure_info *found_info = NULL;
 
+	int64_t best_time_diff_ns = 0;
+
 	for (i = 0; i < ctx->exposure_history_size; i++) {
 		rift_tracker_exposure_info *info = ctx->exposure_history + i;
 		int64_t time_diff_ns = frame_start_local_ts - info->local_ts;
 		if (time_diff_ns > -10000000 && time_diff_ns < 10000000) {
-			found_info = info;
-			break;
+			if (found_info == NULL || abs(time_diff_ns) < best_time_diff_ns) {
+				found_info = info;
+				best_time_diff_ns = abs(time_diff_ns);
+			}
 		}
 	}
 
@@ -481,6 +518,90 @@ static void store_exposure_info (recording_simulator *ctx,
 	    dev_info->device_time_ns);
 
 	info->n_devices++;
+}
+
+static void simulator_process_pending_video_frame (recording_simulator *sim,
+	const char *sensor_serial_no, uint64_t frame_local_ts, uint64_t frame_pts)
+{
+	int i;
+
+	/* Look up the sensor by serial no */
+	recording_simulator_stream_video *sim_stream = NULL;
+	for (i = 0; i < sim->n_sensors; i++) {
+		recording_simulator_stream_video *cur= sim->sensor_video_stream[i];
+		if (strcmp (cur->serial_no, sensor_serial_no))
+			continue;
+		sim_stream = cur;
+		break;
+	}
+
+	if (sim_stream == NULL) {
+		g_printerr ("Sensor %s not found, but we received a frame_captured event!\n", sensor_serial_no);
+		return;
+	}
+
+	/* Not having any pending frames can just mean we already processed the target
+	 * frame */
+	if (sim_stream->pending_frames == NULL || sim_stream->n_pending_frames < 1)
+		return;
+
+	int removed_frames = 0;
+	for (i = 0; i < sim_stream->n_pending_frames; i++) {
+		recording_simulator_video_frame *sim_frame = sim_stream->pending_frames[i];
+		int64_t time_diff = sim_frame->frame.pts - frame_pts;
+		if (time_diff < -5000000) {
+			/* This frame is too far in the past - this is not our frame */
+			printf("Sensor %s - Skipping pending frame with PTS %" PRIu64
+			    " (late by %fms) - missing frame-captured events\n",
+			    sensor_serial_no, sim_frame->frame.pts, (double) (-time_diff) / 1000000.0);
+			free (sim_frame);
+			removed_frames++;
+			continue;
+		}
+		if (time_diff > 5000000) {
+			/* This frame is in the future. Ignore it */
+			printf("Sensor %s - Leaving pending frame with PTS %" PRIu64
+			    " - too far in the future %" PRIu64 "\n",
+			    sensor_serial_no, sim_frame->frame.pts, time_diff);
+			break;
+		}
+
+		sim_frame->frame.start_ts = frame_local_ts;
+
+		rift_tracker_exposure_info exp_info = { 0, };
+
+		bool res = get_exposure_info(sim, frame_local_ts, &exp_info);
+		if (!res) {
+			printf("Sensor %s - Missing exposure/capture events for video frame PTS %" G_GUINT64_FORMAT
+			    " last frame local_ts %" G_GUINT64_FORMAT "\n", sim_stream->serial_no,
+			    sim_frame->frame.pts, frame_local_ts);
+			return;
+		}
+
+#if 0
+		printf("Sensor %s - Matched frame-captured event (frame-local-ts %" PRIu64
+		    ", PTS %" PRIu64 ") to frame PTS %" PRIu64
+				" - exposure local ts %" PRIu64 " (delta %" PRId64
+				") count %u\n", sensor_serial_no,
+				frame_local_ts, frame_pts, sim_frame->frame.pts,
+				exp_info.local_ts, (frame_local_ts - exp_info.local_ts), exp_info.count);
+#endif
+
+		recording_simulator_sensor_process_frame(sim_stream->sensor, &sim_frame->frame, &exp_info);
+
+		removed_frames++;
+		free (sim_frame);
+		break;
+	}
+
+	if (removed_frames > 0) {
+		sim_stream->n_pending_frames -= removed_frames;
+
+		size_t bytes_to_remove = sizeof (recording_simulator_video_frame *) * removed_frames;
+		size_t bytes_remain = sizeof (recording_simulator_video_frame *) * sim_stream->n_pending_frames;
+
+		memmove (sim_stream->pending_frames, sim_stream->pending_frames + bytes_to_remove, bytes_remain);
+	}
 }
 
 static void handle_on_event(void *cb_data, recording_loader_stream *stream, uint64_t pts,
@@ -574,8 +695,12 @@ static void handle_on_event(void *cb_data, recording_loader_stream *stream, uint
 			rift_tracked_device_simulator_on_exposure (sim_stream->device, data->exposure.local_ts,
 				data->exposure.device_ts, data->exposure.exposure_ts, data->exposure.delay_slot);
 
-			store_exposure_info(simulator, data->exposure.local_ts, data->exposure.exposure_ts, data->exposure.exposure_count,
-			    sim_stream->device, data->exposure.delay_slot);
+			/* FIXME: During a full replay we could ignore the recording's delay slot
+			 * assignments and make our own */
+			if (data->exposure.delay_slot != -1) {
+				store_exposure_info(simulator, data->exposure.local_ts, data->exposure.exposure_ts, data->exposure.exposure_count,
+				    sim_stream->device, data->exposure.delay_slot);
+			}
 			break;
 		case DATA_POINT_POSE:
 			if (sim_stream->device == NULL) {
@@ -640,11 +765,14 @@ static void handle_on_event(void *cb_data, recording_loader_stream *stream, uint
 				break;
 			}
 
-			simulator->last_frame_capture_local_ts = data->frame_captured.frame_local_ts;
-
 			rift_tracked_device_simulator_frame_captured(sim_stream->device, data->frame_captured.local_ts,
 				data->frame_captured.frame_local_ts, data->frame_captured.delay_slot,
 				data->frame_captured.serial_no);
+
+			/* The expected PTS of the frame is calculated by subtracting the time between
+			 * this event (local_ts) and the frame's start (frame_local_ts) from our PTS */
+			uint64_t expected_pts = pts - (data->frame_captured.local_ts - data->frame_captured.frame_local_ts);
+			simulator_process_pending_video_frame (simulator, data->frame_captured.serial_no, data->frame_captured.frame_local_ts, expected_pts);
 			break;
 		case DATA_POINT_FRAME_RELEASE:
 			if (sim_stream->device == NULL) {
@@ -711,42 +839,39 @@ static void handle_video_frame(void *cb_data, recording_loader_stream *stream, u
 		if (sim_stream->have_pose)
 			pose = &sim_stream->pose;
 
-		sim_stream->sensor = recording_simulator_sensor_new(sim_stream->serial_no,
+		sim_stream->sensor = recording_simulator_sensor_new(sim_stream->id, sim_stream->serial_no,
 		    &sim_stream->calibration, pose);
 
 		simulator_update_tracked_devices(simulator);
 	}
 
-	/* And process the frame */
-#if 0
-	printf("Got video frame for sensor %s PTS %" G_GUINT64_FORMAT
-	    " last frame ts %" G_GUINT64_FORMAT "\n",
-	    sim_stream->serial_no, pts, simulator->last_frame_capture_local_ts);
-#endif
+	/* Store the frame for processing when the CAPTURED events come in on this sensor.
+	 * This is a bit annoying, but happens because the only information in the recordings
+	 * about each video frame is that timestamp, which is set based on the time the frame
+	 * started arriving from USB, which then needs to be matched to the closest EXPOSURE
+	 * event */
 
+#if 0
+	printf("Got video frame for sensor %s PTS %" G_GUINT64_FORMAT "\n",
+	    sim_stream->serial_no, pts);
+#endif
 	assert (frame_len == sim_stream->stride * sim_stream->height);
 
-	rift_tracker_exposure_info exp_info = { 0, };
-
-	bool res = get_exposure_info(simulator, simulator->last_frame_capture_local_ts, &exp_info);
-	if (!res) {
-		printf("Missing exposure/capture events for video frame sensor %s PTS %" G_GUINT64_FORMAT
-				" last frame local_ts %" G_GUINT64_FORMAT "\n", sim_stream->serial_no, pts, simulator->last_frame_capture_local_ts);
-		return;
-	}
-
-	ohmd_video_frame *frame = calloc(1, sizeof(ohmd_video_frame));
+	recording_simulator_video_frame *sim_frame = malloc (sizeof (recording_simulator_video_frame) + frame_len);
+	ohmd_video_frame *frame = (ohmd_video_frame *) sim_frame;
 
 	frame->format = OHMD_VIDEO_FRAME_FORMAT_GRAY8;
 	frame->pts = pts;
-	frame->start_ts = simulator->last_frame_capture_local_ts;
-	frame->data = frame_data;
+	frame->start_ts = -1;
+	frame->data = sim_frame->frame_data;
 	frame->data_block_size = frame->data_size = frame_len;
 	frame->stride = sim_stream->stride;
 	frame->width = sim_stream->width;
 	frame->height = sim_stream->height;
 
-	recording_simulator_sensor_process_frame(sim_stream->sensor, frame, &exp_info);
+	memcpy(sim_frame->frame_data, frame_data, frame_len);
+
+	stream_video_store_pending_frame (sim_stream, sim_frame);
 }
 
 recording_simulator *recording_simulator_new(const char *json_output_dir, bool full_simulation)
@@ -863,14 +988,27 @@ simulator_update_sensor_pose (recording_simulator *sim, recording_simulator_stre
 	struct recording_simulator_event *pose_event =
 		stream_events_find_sensor_event (sim->global_metadata, DATA_POINT_SENSOR_POSE, sim_stream->s.stream_name);
 
-	if (pose_event == NULL) {
-		// g_printerr ("Received video frame for stream %s before sensor pose\n", sim_stream->s.stream_name);
+	if (pose_event != NULL) {
+		struct data_point *pose = &pose_event->data;
+		sim_stream->pose = pose->sensor_pose.pose;
+	} else {
+#if 0
 		return false;
+#else
+		if (!strcmp (sim_stream->serial_no, "WMTD30333009TJ")) {
+			printf("Using default pose for camera stream %s\n", sim_stream->serial_no);
+			posef default_pose = {
+				.orient = { { -0.965901, -0.103808, -0.227426, -0.067350 } },
+				.pos = { { -0.984948, -0.361877, 1.573633 } }
+			};
+
+			sim_stream->pose = default_pose;
+		}
+		else {
+			return false;
+		}
+#endif
 	}
-
-	struct data_point *pose = &pose_event->data;
-
-	sim_stream->pose = pose->sensor_pose.pose;
 
 	printf("Got pose for camera stream %s. Position %f %f %f, orientation %f %f %f %f\n",
 		sim_stream->s.stream_name,
