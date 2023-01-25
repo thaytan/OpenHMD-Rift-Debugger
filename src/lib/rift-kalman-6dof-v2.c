@@ -160,7 +160,7 @@ static bool process_func(const ukf_base *ukf, const double dt, const matrix2d *X
 	 *	vec3d accel-bias; (16:18)
 	 *	vec3d gyro-bias (19:21)
 	 */
-	rift_kalman_6dof_filter *filter_state = (rift_kalman_6dof_filter *)(ukf);
+	rift_kalman_6dof_v2_filter *filter_state = (rift_kalman_6dof_v2_filter *)(ukf);
 
 	/* Most of the state stays constant - constant acceleration, constant angular velocity, biases -
 	 * so copy the whole state to start, then adjust the predicted part */
@@ -380,7 +380,7 @@ static bool calc_quat_mean(const matrix2d *sigmas, int quat_index, const matrix2
 /* Callback function that takes a set of sigma points (N_sigmaxN_state) and weights (1xN_sigma) and computes the mean (1xN_state) */
 static bool state_mean_func(const unscented_transform *ut, const matrix2d *sigmas, const matrix2d *weights, matrix2d *mean)
 {
-	rift_kalman_6dof_filter *filter_state = (rift_kalman_6dof_filter *)(ut);
+	rift_kalman_6dof_v2_filter *filter_state = (rift_kalman_6dof_v2_filter *)(ut);
 	int i;
 
 	/* Compute euclidean barycentric mean, then fix up the quaternion component */
@@ -437,7 +437,7 @@ static void calc_quat_residual(const matrix2d *X, const matrix2d *Y, int state_i
 
 static bool state_residual_func(const unscented_transform *ut, const matrix2d *X, const matrix2d *Y, matrix2d *residual)
 {
-	rift_kalman_6dof_filter *filter_state = (rift_kalman_6dof_filter *)(ut);
+	rift_kalman_6dof_v2_filter *filter_state = (rift_kalman_6dof_v2_filter *)(ut);
 	int i, j;
 
 	/* Quaternion component */
@@ -498,7 +498,7 @@ static void calc_quat_sum(const matrix2d *Y, int state_index, const matrix2d *ad
 
 static bool state_sum_func(const unscented_transform *ut, const matrix2d *Y, const matrix2d *addend, matrix2d *X)
 {
-	rift_kalman_6dof_filter *filter_state = (rift_kalman_6dof_filter *)(ut);
+	rift_kalman_6dof_v2_filter *filter_state = (rift_kalman_6dof_v2_filter *)(ut);
 	int i, j;
 
 	/* Quaternion component */
@@ -558,7 +558,7 @@ static bool gravity_measurement_func(const ukf_base *ukf, const ukf_measurement 
 		pose_gravity_swing.x, pose_gravity_swing.y, pose_gravity_swing.z, pose_gravity_swing.w);
 
 #if 0
-	rift_kalman_6dof_filter *state = (rift_kalman_6dof_filter *)(ukf);
+	rift_kalman_6dof_v2_filter *state = (rift_kalman_6dof_v2_filter *)(ukf);
 	print_col_vec("gravity measurement prediction (z_bar)", state->current_ts, z);
 #endif
 
@@ -629,7 +629,7 @@ static bool gravity_residual_func(const unscented_transform *ut, const matrix2d 
 
 static bool pose_measurement_func(const ukf_base *ukf, const ukf_measurement *m, const matrix2d *x, matrix2d *z)
 {
-	rift_kalman_6dof_filter *filter_state = (rift_kalman_6dof_filter *)(ukf);
+	rift_kalman_6dof_v2_filter *filter_state = (rift_kalman_6dof_v2_filter *)(ukf);
 	int state_position_index = STATE_POSITION;
 	int state_orientation_index = STATE_ORIENTATION;
 
@@ -656,7 +656,7 @@ static bool pose_measurement_func(const ukf_base *ukf, const ukf_measurement *m,
 
 static bool position_measurement_func(const ukf_base *ukf, const ukf_measurement *m, const matrix2d *x, matrix2d *z)
 {
-	rift_kalman_6dof_filter *filter_state = (rift_kalman_6dof_filter *)(ukf);
+	rift_kalman_6dof_v2_filter *filter_state = (rift_kalman_6dof_v2_filter *)(ukf);
 	int state_position_index = STATE_POSITION;
 
 	if (filter_state->pose_slot != -1) {
@@ -755,7 +755,7 @@ static bool pose_sum_func(const unscented_transform *ut, const matrix2d *Y, cons
 	return true;
 }
 
-void rift_kalman_6dof_init(rift_kalman_6dof_filter *state, posef *init_pose, int num_delay_slots)
+void rift_kalman_6dof_v2_init(rift_kalman_6dof_v2_filter *state, posef *init_pose, int num_delay_slots)
 {
 	int i;
 
@@ -831,7 +831,7 @@ void rift_kalman_6dof_init(rift_kalman_6dof_filter *state, posef *init_pose, int
 	rift_kalman_orient_init(&state->orient_filter, init_pose, num_delay_slots);
 }
 
-void rift_kalman_6dof_clear(rift_kalman_6dof_filter *state)
+void rift_kalman_6dof_v2_clear(rift_kalman_6dof_v2_filter *state)
 {
 	ukf_measurement_clear(&state->m2);
 	ukf_measurement_clear(&state->m_gravity);
@@ -843,7 +843,7 @@ void rift_kalman_6dof_clear(rift_kalman_6dof_filter *state)
 #if 1
 /* Update Q using a piecewise-linear process noise model
  * for linear acceleration and rotation */
-static void update_Q(rift_kalman_6dof_filter *state, double dt)
+static void update_Q(rift_kalman_6dof_v2_filter *state, double dt)
 {
 	int i;
 
@@ -875,7 +875,7 @@ static void update_Q(rift_kalman_6dof_filter *state, double dt)
 }
 #endif
 
-static void reset_noise_entry(rift_kalman_6dof_filter *state, matrix2d *X, matrix2d *P, int state_index, int cov_index, double noise_variance)
+static void reset_noise_entry(rift_kalman_6dof_v2_filter *state, matrix2d *X, matrix2d *P, int state_index, int cov_index, double noise_variance)
 {
 	int i;
 	matrix_result ret;
@@ -900,7 +900,7 @@ static void reset_noise_entry(rift_kalman_6dof_filter *state, matrix2d *X, matri
 		MATRIX2D_Y(X, i) = 0.0;
 }
 
-static void reset_noise(rift_kalman_6dof_filter *state, matrix2d *X, matrix2d *P)
+static void reset_noise(rift_kalman_6dof_v2_filter *state, matrix2d *X, matrix2d *P)
 {
 	/* Reset the augmented control vector covariance noise entries */
 	reset_noise_entry(state, X, P, STATE_ACCEL_BIAS_NOISE, COV_ACCEL_BIAS_NOISE, IMU_ACCEL_BIAS_NOISE*IMU_ACCEL_BIAS_NOISE);
@@ -911,7 +911,7 @@ static void reset_noise(rift_kalman_6dof_filter *state, matrix2d *X, matrix2d *P
 }
 
 static void
-rift_kalman_6dof_update(rift_kalman_6dof_filter *state, uint64_t time, ukf_measurement *m)
+rift_kalman_6dof_v2_update(rift_kalman_6dof_v2_filter *state, uint64_t time, ukf_measurement *m)
 {
 	/* Calculate dt */
 	double dt = 0;
@@ -981,7 +981,7 @@ static void print_mat(const char *label, const matrix2d *mat)
 }
 #endif
 
-void rift_kalman_6dof_prepare_delay_slot(rift_kalman_6dof_filter *state, uint64_t time, int delay_slot)
+void rift_kalman_6dof_v2_prepare_delay_slot(rift_kalman_6dof_v2_filter *state, uint64_t time, int delay_slot)
 {
 #if DUMP_COV_UPDATES
 	printf ("Initialising slot %d dt %f\n",
@@ -995,7 +995,7 @@ void rift_kalman_6dof_prepare_delay_slot(rift_kalman_6dof_filter *state, uint64_
 
 	/* If time is not the current time, project the state forward to the timestamp */
 	if (time != state->current_ts)
-		rift_kalman_6dof_update(state, time, NULL);
+		rift_kalman_6dof_v2_update(state, time, NULL);
 
 	/* set up the lagged slot by cloning state and covariance blocks. We
 	 * need to copy the state variables across, and the rows + columns
@@ -1077,7 +1077,7 @@ void rift_kalman_6dof_prepare_delay_slot(rift_kalman_6dof_filter *state, uint64_
 	rift_kalman_orient_prepare_delay_slot(&state->orient_filter, time, delay_slot);
 }
 
-void rift_kalman_6dof_release_delay_slot(rift_kalman_6dof_filter *state, int delay_slot)
+void rift_kalman_6dof_v2_release_delay_slot(rift_kalman_6dof_v2_filter *state, int delay_slot)
 {
 	state->slot_inuse[delay_slot] = false;
 	rift_kalman_orient_release_delay_slot(&state->orient_filter, delay_slot);
@@ -1126,7 +1126,7 @@ oquatf_get_angle(const quatf *q1, const quatf *q2)
 }
 #endif
 
-void rift_kalman_6dof_imu_update (rift_kalman_6dof_filter *state, uint64_t time, const vec3f* ang_vel, const vec3f* accel, const vec3f* mag_field)
+void rift_kalman_6dof_v2_imu_update (rift_kalman_6dof_v2_filter *state, uint64_t time, const vec3f* ang_vel, const vec3f* accel, const vec3f* mag_field)
 {
 	/* Put angular velocity and accel into the input vector */
 	state->ang_vel.x = ang_vel->x;
@@ -1249,7 +1249,7 @@ void rift_kalman_6dof_imu_update (rift_kalman_6dof_filter *state, uint64_t time,
 		MATRIX2D_Y(m->z, GRAVITY_MEAS_ORIENT+3) = imu_gravity_orient.w;
 
 		/* FIXME: Do a measurement only if the device has been stable / quasi-stationary long enough */
-		rift_kalman_6dof_update(state, time, m);
+		rift_kalman_6dof_v2_update(state, time, m);
 		state->last_imu_update_ts = time;
 
 		/* Restart the quasi-stationary timer too */
@@ -1262,7 +1262,7 @@ void rift_kalman_6dof_imu_update (rift_kalman_6dof_filter *state, uint64_t time,
 		orient_quat_from_gravity(&imu_gravity_orient, &unbiased_accel);
 #endif
 		// Apply the process model, but no measurement
-		rift_kalman_6dof_update(state, time, NULL);
+		rift_kalman_6dof_v2_update(state, time, NULL);
 	}
 
 #if 1
@@ -1303,7 +1303,7 @@ void rift_kalman_6dof_imu_update (rift_kalman_6dof_filter *state, uint64_t time,
 	rift_kalman_orient_imu_update (&state->orient_filter, time, ang_vel, &state->lin_accel, mag_field);
 }
 
-void rift_kalman_6dof_pose_update(rift_kalman_6dof_filter *state, uint64_t time, posef *pose, vec3f *pos_error, int delay_slot)
+void rift_kalman_6dof_v2_pose_update(rift_kalman_6dof_v2_filter *state, uint64_t time, posef *pose, vec3f *pos_error, int delay_slot)
 {
 	/* Use lagged state vector entries to correct for delay */
 	state->pose_slot = delay_slot;
@@ -1324,7 +1324,7 @@ void rift_kalman_6dof_pose_update(rift_kalman_6dof_filter *state, uint64_t time,
 #endif
 
 	posef prior_pose;
-  rift_kalman_6dof_get_delay_slot_pose_at(state, time, delay_slot, &prior_pose, NULL, NULL, NULL, NULL, NULL);
+  rift_kalman_6dof_v2_get_delay_slot_pose_at(state, time, delay_slot, &prior_pose, NULL, NULL, NULL, NULL, NULL);
 	DEBUG("6DOF Device %d TS %f rel %f dt %f Pose update delay slot %d pos %f %f %f orient %f %f %f %f obs_pos_error %f %f %f (prior %f %f %f orient %f %f %f %f error %f)\n",
 			state->device_id, NS_TO_SEC(time), NS_TO_SEC((int64_t)(time - state->first_ts)),
 			NS_TO_SEC((int64_t)(time - state->current_ts)), delay_slot, 
@@ -1346,7 +1346,7 @@ void rift_kalman_6dof_pose_update(rift_kalman_6dof_filter *state, uint64_t time,
 	 }
 
 	if (position_only) {
-		return rift_kalman_6dof_position_update(state, time, &pose->pos, pos_error, delay_slot);
+		return rift_kalman_6dof_v2_position_update(state, time, &pose->pos, pos_error, delay_slot);
 	} else {
 		ukf_measurement *m = &state->m2;
 		MATRIX2D_Y(m->z, POSE_MEAS_POSITION+0) = pose->pos.x;
@@ -1362,14 +1362,14 @@ void rift_kalman_6dof_pose_update(rift_kalman_6dof_filter *state, uint64_t time,
 		for (int i = 0; i < 3; i++)
 			MATRIX2D_XY(m->R, i, i) = pos_error->arr[i]*pos_error->arr[i];
 
-		rift_kalman_6dof_update(state, time, m);
+		rift_kalman_6dof_v2_update(state, time, m);
 	}
 
 	state->orient_filter.device_id = state->device_id;
 	rift_kalman_orient_pose_update(&state->orient_filter, time, pose, delay_slot);
 }
 
-void rift_kalman_6dof_position_update(rift_kalman_6dof_filter *state, uint64_t time, vec3f *pos, vec3f *pos_error, int delay_slot)
+void rift_kalman_6dof_v2_position_update(rift_kalman_6dof_v2_filter *state, uint64_t time, vec3f *pos, vec3f *pos_error, int delay_slot)
 {
 	ukf_measurement *m;
 
@@ -1377,7 +1377,7 @@ void rift_kalman_6dof_position_update(rift_kalman_6dof_filter *state, uint64_t t
 	state->pose_slot = delay_slot;
 
 	posef prior_pose;
-  rift_kalman_6dof_get_delay_slot_pose_at(state, time, delay_slot, &prior_pose, NULL, NULL, NULL, NULL, NULL);
+  rift_kalman_6dof_v2_get_delay_slot_pose_at(state, time, delay_slot, &prior_pose, NULL, NULL, NULL, NULL, NULL);
 	printf("6DOF Device %d TS %f rel %f dt %f Position update delay slot %d pos %f %f %f (prior %f %f %f orient %f %f %f %f)\n",
 			state->device_id, NS_TO_SEC(time), NS_TO_SEC((int64_t)(time - state->first_ts)),
 			NS_TO_SEC((int64_t)(time - state->current_ts)), delay_slot, 
@@ -1399,12 +1399,12 @@ void rift_kalman_6dof_position_update(rift_kalman_6dof_filter *state, uint64_t t
 	for (int i = 0; i < 3; i++)
 		MATRIX2D_XY(m->R, i, i) = pos_error->arr[i]*pos_error->arr[i];
 
-	rift_kalman_6dof_update(state, time, m);
+	rift_kalman_6dof_v2_update(state, time, m);
 }
 
 /* Get the pose info from a delay slot, or the main state
  * if delay_slot = -1 */
-void rift_kalman_6dof_get_delay_slot_pose_at(rift_kalman_6dof_filter *state, uint64_t time, int delay_slot, posef *pose,
+void rift_kalman_6dof_v2_get_delay_slot_pose_at(rift_kalman_6dof_v2_filter *state, uint64_t time, int delay_slot, posef *pose,
   vec3f *vel, vec3f *accel, vec3f *ang_vel, vec3f *pos_error, vec3f *rot_error)
 {
 	matrix2d *x = state->ukf.x_prior;
@@ -1498,8 +1498,8 @@ void rift_kalman_6dof_get_delay_slot_pose_at(rift_kalman_6dof_filter *state, uin
 	rift_kalman_orient_get_delay_slot_pose_at(&state->orient_filter, time, delay_slot, pose, ang_vel, rot_error);
 }
 
-void rift_kalman_6dof_get_pose_at(rift_kalman_6dof_filter *state, uint64_t time, posef *pose, vec3f *vel, vec3f *accel,
+void rift_kalman_6dof_v2_get_pose_at(rift_kalman_6dof_v2_filter *state, uint64_t time, posef *pose, vec3f *vel, vec3f *accel,
   vec3f *ang_vel, vec3f *pos_error, vec3f *rot_error)
 {
-	rift_kalman_6dof_get_delay_slot_pose_at(state, time, -1, pose, vel, accel, ang_vel, pos_error, rot_error);
+	rift_kalman_6dof_v2_get_delay_slot_pose_at(state, time, -1, pose, vel, accel, ang_vel, pos_error, rot_error);
 }

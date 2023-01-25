@@ -79,7 +79,7 @@ trackersimlib_sources += [
     ohmd_src_dir / 'drv_oculus_rift/rift-sensor-flicker.c',
     ohmd_src_dir / 'drv_oculus_rift/rift-sensor-blobwatch.c',
     ohmd_src_dir / 'drv_oculus_rift/rift-sensor-maths.c',
-    # ohmd_src_dir / 'drv_oculus_rift/rift-kalman-6dof.c',
+    ohmd_src_dir / 'drv_oculus_rift/rift-kalman-6dof.c',
 ]
 if host_machine.system() == 'windows'
     trackersimlib_sources += ohmd_src_dir / 'platform-win32.c'

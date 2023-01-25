@@ -10,7 +10,6 @@
 #define __RECORDING_DEVICE_SIMULATOR_H__
 
 #include "rift-tracker-common.h"
-#include "rift-kalman-6dof-v2.h"
 #include "exponential-filter.h"
 #include "rift-sensor-pose-helper.h"
 
@@ -48,7 +47,8 @@ struct rift_tracked_device_simulator {
 	int index; /* Index of this entry in the devices array for the tracker and exposures */
 
 	/* 6DOF Kalman Filter */
-	rift_kalman_6dof_filter ukf_fusion;
+  bool use_v2_filter;
+	void *ukf_fusion;
 
 	/* Account keeping for UKF fusion slots */
 	rift_tracker_pose_delay_slot delay_slots[NUM_POSE_DELAY_SLOTS];

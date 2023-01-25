@@ -17,9 +17,9 @@
 /* Maximum Number of extra lagged state slots to allow for */
 #define MAX_DELAY_SLOTS 5
 
-typedef struct rift_kalman_6dof_filter rift_kalman_6dof_filter;
+typedef struct rift_kalman_6dof_v2_filter rift_kalman_6dof_v2_filter;
 
-struct rift_kalman_6dof_filter {
+struct rift_kalman_6dof_v2_filter {
   /* 22 element state vector:
    * Inertial frame:
    *  quatd orientation (quaternion) (0:3)
@@ -88,17 +88,17 @@ struct rift_kalman_6dof_filter {
 	rift_kalman_orient_filter orient_filter;
 };
 
-void rift_kalman_6dof_init(rift_kalman_6dof_filter *state, posef *init_pose, int num_delay_slots);
-void rift_kalman_6dof_clear(rift_kalman_6dof_filter *state);
+void rift_kalman_6dof_v2_init(rift_kalman_6dof_v2_filter *state, posef *init_pose, int num_delay_slots);
+void rift_kalman_6dof_v2_clear(rift_kalman_6dof_v2_filter *state);
 
-void rift_kalman_6dof_prepare_delay_slot(rift_kalman_6dof_filter *state, uint64_t time, int delay_slot);
-void rift_kalman_6dof_release_delay_slot(rift_kalman_6dof_filter *state, int delay_slot);
+void rift_kalman_6dof_v2_prepare_delay_slot(rift_kalman_6dof_v2_filter *state, uint64_t time, int delay_slot);
+void rift_kalman_6dof_v2_release_delay_slot(rift_kalman_6dof_v2_filter *state, int delay_slot);
 
-void rift_kalman_6dof_imu_update (rift_kalman_6dof_filter *state, uint64_t time, const vec3f* ang_vel, const vec3f* accel, const vec3f* mag_field);
-void rift_kalman_6dof_pose_update(rift_kalman_6dof_filter *state, uint64_t time, posef *pose, vec3f *pos_error, int delay_slot);
-void rift_kalman_6dof_position_update(rift_kalman_6dof_filter *state, uint64_t time, vec3f *position, vec3f *pos_error, int delay_slot);
+void rift_kalman_6dof_v2_imu_update (rift_kalman_6dof_v2_filter *state, uint64_t time, const vec3f* ang_vel, const vec3f* accel, const vec3f* mag_field);
+void rift_kalman_6dof_v2_pose_update(rift_kalman_6dof_v2_filter *state, uint64_t time, posef *pose, vec3f *pos_error, int delay_slot);
+void rift_kalman_6dof_v2_position_update(rift_kalman_6dof_v2_filter *state, uint64_t time, vec3f *position, vec3f *pos_error, int delay_slot);
 
-void rift_kalman_6dof_get_delay_slot_pose_at(rift_kalman_6dof_filter *state, uint64_t time, int delay_slot, posef *pose, vec3f *vel, vec3f *accel, vec3f *ang_vel, vec3f *pos_error, vec3f *rot_error);
-void rift_kalman_6dof_get_pose_at(rift_kalman_6dof_filter *state, uint64_t time, posef *pose, vec3f *vel, vec3f *accel, vec3f *ang_vel, vec3f *pos_error, vec3f *rot_error);
+void rift_kalman_6dof_v2_get_delay_slot_pose_at(rift_kalman_6dof_v2_filter *state, uint64_t time, int delay_slot, posef *pose, vec3f *vel, vec3f *accel, vec3f *ang_vel, vec3f *pos_error, vec3f *rot_error);
+void rift_kalman_6dof_v2_get_pose_at(rift_kalman_6dof_v2_filter *state, uint64_t time, posef *pose, vec3f *vel, vec3f *accel, vec3f *ang_vel, vec3f *pos_error, vec3f *rot_error);
 
 #endif
